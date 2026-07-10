@@ -1,0 +1,35 @@
+[project]
+name = "docvault-backend"
+version = "0.1.0"
+description = "DocVault API — document management platform"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.18.5",
+    "asyncpg>=0.30.0",
+    "fastapi>=0.139.0",
+    "pydantic-settings>=2.14.2",
+    "sqlalchemy>=2.0.51",
+    "structlog>=25.1.0",
+    "uvicorn[standard]>=0.51.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.0",
+    "mypy>=1.15.0",
+    "pre-commit>=4.0.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.26.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.11.0",
+    "testcontainers[postgres]>=4.10.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: needs a running Docker daemon (testcontainers)",
+]
