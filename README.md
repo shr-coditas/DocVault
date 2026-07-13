@@ -12,7 +12,7 @@ Early development — working through the roadmap below.
 ## Roadmap
 
 - [x] Foundation: FastAPI skeleton, async SQLAlchemy + Alembic, structured logging, request-id middleware, CI
-- [ ] Auth: registration/login, JWT access tokens + refresh token rotation
+- [x] Auth: registration/login, JWT access tokens + refresh token rotation, RFC 9457 errors
 - [ ] Workspaces, teams, and role-based access control; audit log
 - [ ] Folders and document upload/download (S3-compatible storage); trash & restore
 - [ ] Document versioning, tags, metadata
