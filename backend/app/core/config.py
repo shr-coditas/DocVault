@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://docvault:docvault@localhost:5432/docvault"
     database_echo: bool = False
 
+    jwt_secret: str = "dev-only-secret-not-for-production"
+    access_token_ttl_minutes: int = 15
+    refresh_token_ttl_days: int = 7
+
     cors_origins: list[str] = []
 
 

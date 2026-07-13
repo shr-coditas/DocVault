@@ -1,13 +1,15 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
+from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine
 from app.middleware.context import RequestContextMiddleware
+from app.modules.auth.router import router as auth_router
 from app.modules.health.router import router as health_router
 
 
@@ -22,6 +24,7 @@ def create_app() -> FastAPI:
     configure_logging(settings)
 
     app = FastAPI(title="DocVault API", version="0.1.0", lifespan=lifespan)
+    register_exception_handlers(app)
 
     if settings.cors_origins:
         app.add_middleware(
@@ -34,6 +37,10 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(health_router)
+
+    api_v1 = APIRouter(prefix="/api/v1")
+    api_v1.include_router(auth_router)
+    app.include_router(api_v1)
 
     return app
 
