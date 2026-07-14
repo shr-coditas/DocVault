@@ -41,3 +41,21 @@ Short notes on non-obvious choices. Newest at the bottom.
   `request_id` for log correlation.
 - **UUIDv7 primary keys**: globally unique like UUIDv4 but time-ordered, so
   b-tree indexes stay compact.
+
+## 2026-07-13 — workspaces, RBAC, audit
+
+- **Roles/permissions live in the database**, seeded by the migration from a
+  single code catalog (`rbac/catalog.py`). Permission checks query the DB —
+  not JWT claims — so a role change takes effect immediately instead of when
+  the token expires.
+- **One authorization choke point**: `require_permission("...")` dependency →
+  `PermissionService.require()`. Every workspace-scoped endpoint declares its
+  required permission; nothing checks roles ad hoc.
+- **404 for non-members, 403 for members without permission**: outsiders must
+  not learn that a workspace exists.
+- **Audit rows have no foreign keys** on purpose: the trail must survive
+  deletion of the workspace/user/resource it describes. Rows are staged in the
+  same transaction as the mutation (trail can't disagree with the data) and
+  carry the `request_id` for log correlation.
+- **Last-owner guard**: a workspace can never lose its final owner via demote
+  or removal (409).
