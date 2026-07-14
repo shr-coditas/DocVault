@@ -10,8 +10,13 @@ from app.db.session import get_db
 from app.main import create_app
 
 # import models so Base.metadata contains every table
+from app.modules.audit import models as _audit_models  # noqa: F401
 from app.modules.auth import models as _auth_models  # noqa: F401
+from app.modules.rbac import models as _rbac_models  # noqa: F401
+from app.modules.rbac.seed import sync_rbac_catalog
+from app.modules.teams import models as _teams_models  # noqa: F401
 from app.modules.users import models as _users_models  # noqa: F401
+from app.modules.workspaces import models as _workspaces_models  # noqa: F401
 
 
 @pytest.fixture
@@ -37,6 +42,9 @@ async def db_client(postgres_url: str) -> AsyncIterator[AsyncClient]:
         await conn.run_sync(Base.metadata.create_all)
 
     factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with factory() as session:
+        await sync_rbac_catalog(session)  # prod gets this from the migration seed
 
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with factory() as session:
