@@ -11,6 +11,7 @@ from app.db.session import dispose_engine
 from app.middleware.context import RequestContextMiddleware
 from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
+from app.modules.folders.router import router as folders_router
 from app.modules.health.router import router as health_router
 from app.modules.teams.router import router as teams_router
 from app.modules.workspaces.router import router as workspaces_router
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     api_v1 = APIRouter(prefix="/api/v1")
     api_v1.include_router(auth_router)
     api_v1.include_router(workspaces_router)
+    api_v1.include_router(folders_router)
     api_v1.include_router(teams_router)
     api_v1.include_router(audit_router)
     app.include_router(api_v1)

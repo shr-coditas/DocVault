@@ -1,4 +1,50 @@
 services:
+  api:
+    build: ./backend
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8080:8000"   # host 8080 so a local `uvicorn --reload` on 8000 can coexist
+    environment:
+      DATABASE_URL: postgresql+asyncpg://docvault:docvault@db:5432/docvault
+      S3_ENDPOINT_URL: http://minio:9000
+      LOG_JSON: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: docvault
+      MINIO_ROOT_PASSWORD: docvault123
+    ports:
+      - "9000:9000"
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "mc alias set local http://minio:9000 docvault docvault123
+      && mc mb --ignore-existing local/docvault"
+
   db:
     image: postgres:17
     environment:
@@ -17,3 +63,4 @@ services:
 
 volumes:
   db_data:
+  minio_data:

@@ -59,3 +59,22 @@ Short notes on non-obvious choices. Newest at the bottom.
   carry the `request_id` for log correlation.
 - **Last-owner guard**: a workspace can never lose its final owner via demote
   or removal (409).
+
+## 2026-07-14 — storage, docker, folders
+
+- **MinIO behind a `StorageService` interface**: the app speaks plain S3 API;
+  moving from dev (MinIO) to prod (real S3) is a settings change. Objects are
+  streamed in 1 MiB chunks — no whole-file buffering.
+- **Multi-stage Dockerfile with uv**: dependency layer is cached separately
+  from code, image runs as a non-root user, and the container applies
+  migrations on startup (`alembic upgrade head && uvicorn`). Compose API port
+  is 8080 so a local `uvicorn --reload` on 8000 can run side by side.
+- **Folders as an adjacency list + recursive CTEs**: one parent pointer per
+  row; the whole tree (with depth + path) comes back in a single recursive
+  query, and move operations are O(1) row updates. Cycle prevention checks
+  descendants before a move.
+- **`UNIQUE ... NULLS NOT DISTINCT`** (PG 15+) on (workspace, parent, name):
+  plain UNIQUE treats NULLs as distinct, which would have allowed duplicate
+  root-folder names.
+- **Folders reuse `document:*` permissions** instead of adding a `folder:*`
+  set: folders are document structure, and one less catalog migration.

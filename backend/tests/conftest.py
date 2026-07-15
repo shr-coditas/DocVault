@@ -12,6 +12,7 @@ from app.main import create_app
 # import models so Base.metadata contains every table
 from app.modules.audit import models as _audit_models  # noqa: F401
 from app.modules.auth import models as _auth_models  # noqa: F401
+from app.modules.folders import models as _folders_models  # noqa: F401
 from app.modules.rbac import models as _rbac_models  # noqa: F401
 from app.modules.rbac.seed import sync_rbac_catalog
 from app.modules.teams import models as _teams_models  # noqa: F401

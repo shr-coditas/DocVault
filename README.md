@@ -24,8 +24,19 @@ Early development — working through the roadmap below.
 
 Requires Docker and [uv](https://docs.astral.sh/uv/).
 
+**Everything in containers (one command):**
+
 ```bash
-docker compose up -d db
+docker compose up -d --build
+```
+
+API at http://localhost:8080 (docs at `/docs`), MinIO console at http://localhost:9001.
+Migrations run automatically on startup.
+
+**Dev loop (DB + MinIO in Docker, API on the host with hot reload):**
+
+```bash
+docker compose up -d db minio createbuckets
 cd backend
 uv sync
 uv run uvicorn app.main:app --reload
