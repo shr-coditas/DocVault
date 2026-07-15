@@ -4,17 +4,17 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import get_settings
-from app.core.exceptions import register_exception_handlers
-from app.core.logging import configure_logging
+from app.config import get_settings
 from app.db.session import dispose_engine
+from app.exceptions.handlers import register_exception_handlers
 from app.middleware.context import RequestContextMiddleware
-from app.modules.audit.router import router as audit_router
-from app.modules.auth.router import router as auth_router
-from app.modules.folders.router import router as folders_router
-from app.modules.health.router import router as health_router
-from app.modules.teams.router import router as teams_router
-from app.modules.workspaces.router import router as workspaces_router
+from app.routers.audit_router import router as audit_router
+from app.routers.auth_router import router as auth_router
+from app.routers.folder_router import router as folders_router
+from app.routers.health_router import router as health_router
+from app.routers.team_router import router as teams_router
+from app.routers.workspace_router import router as workspaces_router
+from app.utils.logging import configure_logging
 
 
 @asynccontextmanager

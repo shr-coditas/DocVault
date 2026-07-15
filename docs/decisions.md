@@ -78,3 +78,23 @@ Short notes on non-obvious choices. Newest at the bottom.
   root-folder names.
 - **Folders reuse `document:*` permissions** instead of adding a `folder:*`
   set: folders are document structure, and one less catalog migration.
+
+## 2026-07-15 — layered architecture
+
+- **Switched from domain-first modules to layer-first packages**
+  (`routers → controller → services → repository`), aligning with the team's
+  standard project structure. Supersedes the modular-monolith layout of
+  2026-07-10; still one deployable process. Motivation is consistency across
+  the org's codebases, not a runtime concern.
+- **Strict layer responsibilities**: routers define endpoints and permission
+  guards only; controllers extract the request and map results to DTOs;
+  services hold business logic and own the transaction (`commit`); repositories
+  hold every SQLAlchemy query. Services no longer touch the session for data
+  access, which makes them unit-testable with a fake repository.
+- **DTOs live under `controller/dto/`** (request + response Pydantic models),
+  matching the reference project. Class names are unchanged, so the OpenAPI
+  schema and all API behavior stay identical — the 65-test suite passes as-is.
+- **Cross-cutting pieces moved to conventional homes**: `config.py` at the app
+  root, shared FastAPI dependencies in `dependencies.py`, error types +
+  handlers under `exceptions/`, and security/logging/rbac-catalog under
+  `utils/`. The RBAC seed moved to `scripts/`.

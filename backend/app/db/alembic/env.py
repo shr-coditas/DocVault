@@ -5,20 +5,14 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from app.core.config import get_settings
+from app.config import get_settings
 from app.db.base import Base
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
-# import models here as they are added so autogenerate can see them
-from app.modules.audit import models as audit_models  # noqa: E402, F401
-from app.modules.auth import models as auth_models  # noqa: E402, F401
-from app.modules.folders import models as folders_models  # noqa: E402, F401
-from app.modules.rbac import models as rbac_models  # noqa: E402, F401
-from app.modules.teams import models as teams_models  # noqa: E402, F401
-from app.modules.users import models as users_models  # noqa: E402, F401
-from app.modules.workspaces import models as workspaces_models  # noqa: E402, F401
+# importing the models package registers every table on Base.metadata
+from app import models  # noqa: E402, F401
 
 target_metadata = Base.metadata
 

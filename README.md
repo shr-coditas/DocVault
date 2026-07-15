@@ -63,12 +63,30 @@ uv · Ruff · mypy · pytest
 
 ## Project layout
 
+Layered architecture — each request flows through one layer at a time:
+
+```
+routers/  →  controller/  →  services/  →  repository/  →  db
+(HTTP)       (DTO in/out)    (business)    (all queries)
+```
+
 ```
 backend/
   app/
-    core/        # settings, logging setup
-    middleware/  # request-id + access logging
-    db/          # engine/session, declarative base, alembic
-    modules/     # one package per domain (router / schemas / service / models)
+    config.py        # settings
+    dependencies.py  # DB session, current user, permission guards
+    exceptions/      # AppError types + problem+json handlers
+    utils/           # security (JWT/hashing), logging, rbac catalog
+    middleware/      # request-id + access logging
+    db/              # engine/session, declarative base, alembic
+    models/          # SQLAlchemy tables
+    routers/         # endpoint definitions only; delegate to controllers
+    controller/      # one folder per domain, each with its own DTOs
+      <domain>_controller/
+        <domain>_controller.py   # thin: extract request, call service, map to DTO
+        dto/                     # Pydantic request/response models
+    services/        # business logic and workflows; own the transaction
+    repository/      # all database access
+    scripts/         # seed utilities
   tests/
 ```

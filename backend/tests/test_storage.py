@@ -4,8 +4,8 @@ import pytest
 from botocore.exceptions import ClientError
 from testcontainers.minio import MinioContainer
 
-from app.core.config import Settings
-from app.storage.service import StorageService, document_key
+from app.config import Settings
+from app.services.storage_service import StorageService, document_key
 
 
 @pytest.fixture(scope="session")

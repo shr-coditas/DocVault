@@ -2,8 +2,8 @@ import uuid
 
 from httpx import AsyncClient
 
-from app.core.config import get_settings
-from app.core.security import create_access_token
+from app.config import get_settings
+from app.utils.security import create_access_token
 
 REGISTER = "/api/v1/auth/register"
 LOGIN = "/api/v1/auth/login"
