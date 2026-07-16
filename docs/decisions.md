@@ -98,3 +98,26 @@ Short notes on non-obvious choices. Newest at the bottom.
   root, shared FastAPI dependencies in `dependencies.py`, error types +
   handlers under `exceptions/`, and security/logging/rbac-catalog under
   `utils/`. The RBAC seed moved to `scripts/`.
+
+## 2026-07-15 — documents (streaming upload/download)
+
+- **Metadata in Postgres, bytes in object storage**: the `documents` row is the
+  source of truth for listing/access; the file lives in MinIO under a stable
+  `storage_key` (`ws_{id}/doc_{id}/v1_{name}`). The row is written in the same
+  use case as the object; on an upload failure nothing is committed.
+- **Download streams, upload is size-capped**: download wraps
+  `StorageService.stream()` in a `StreamingResponse` (1 MiB chunks, never
+  buffered — the pure-ASGI middleware guarantees this). Upload reads the file in
+  chunks, enforcing `max_upload_size_bytes` (25 MB default, env-overridable) and
+  computing sha256 as it goes, then stores in one call. True streaming *upload*
+  (multipart) is deferred until large files actually need it.
+- **MIME via stdlib `mimetypes`** (guess from filename): zero dependencies and
+  no libmagic/native binary to install. Content-sniffing (python-magic) can
+  harden this later if needed.
+- **`documents.folder_id` is `ON DELETE CASCADE`**: deleting a folder deletes
+  its documents (the UI will warn first). Known follow-up: cascade removes the
+  rows but not the MinIO objects — object cleanup lands with the trash/delete
+  feature.
+- **Storage injected via a dependency** (`get_storage_service`): tests override
+  it to point `StorageService` at a throwaway MinIO (testcontainers), so uploads
+  and downloads are exercised against real object storage, not a mock.
