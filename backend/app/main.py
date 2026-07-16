@@ -10,6 +10,7 @@ from app.exceptions.handlers import register_exception_handlers
 from app.middleware.context import RequestContextMiddleware
 from app.routers.audit_router import router as audit_router
 from app.routers.auth_router import router as auth_router
+from app.routers.document_router import router as documents_router
 from app.routers.folder_router import router as folders_router
 from app.routers.health_router import router as health_router
 from app.routers.team_router import router as teams_router
@@ -46,6 +47,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(auth_router)
     api_v1.include_router(workspaces_router)
     api_v1.include_router(folders_router)
+    api_v1.include_router(documents_router)
     api_v1.include_router(teams_router)
     api_v1.include_router(audit_router)
     app.include_router(api_v1)

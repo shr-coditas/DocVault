@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     s3_bucket: str = "docvault"
     s3_region: str = "us-east-1"
 
+    max_upload_size_bytes: int = 25 * 1024 * 1024  # 25 MiB
+
     cors_origins: list[str] = []
 
 

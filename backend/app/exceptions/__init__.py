@@ -43,10 +43,16 @@ class ConflictError(AppError):
     title = "Conflict"
 
 
+class PayloadTooLargeError(AppError):
+    status_code = status.HTTP_413_CONTENT_TOO_LARGE
+    title = "Content Too Large"
+
+
 __all__ = [
     "AppError",
     "ConflictError",
     "ForbiddenError",
     "NotFoundError",
+    "PayloadTooLargeError",
     "UnauthorizedError",
 ]
