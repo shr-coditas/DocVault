@@ -73,6 +73,14 @@ class FolderRepository:
             stmt = stmt.where(Folder.id != exclude)
         return (await self.session.execute(stmt.limit(1))).scalar_one_or_none()
 
+    async def subtree_ids(self, folder_id: uuid.UUID) -> list[uuid.UUID]:
+        """The folder itself plus every descendant (for cascade cleanups)."""
+        base = select(Folder.id).where(Folder.parent_id == folder_id).cte("subtree", recursive=True)
+        child = sa.orm.aliased(Folder)
+        descendants = base.union_all(select(child.id).join(base, child.parent_id == base.c.id))
+        rows = (await self.session.execute(select(descendants.c.id))).scalars()
+        return [folder_id, *rows]
+
     async def is_descendant(self, ancestor_id: uuid.UUID, candidate_id: uuid.UUID) -> bool:
         base = (
             select(Folder.id)

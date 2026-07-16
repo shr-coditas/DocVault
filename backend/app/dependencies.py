@@ -15,10 +15,19 @@ from app.exceptions import UnauthorizedError
 from app.models.user import User
 from app.repository.user_repository import UserRepository
 from app.services.permission_service import PermissionService
+from app.services.storage_service import StorageService
 from app.utils.rbac_catalog import Perm
 from app.utils.security import decode_access_token
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
+
+
+def get_storage_service() -> StorageService:
+    """Object-storage seam: tests override this to point at a throwaway MinIO."""
+    return StorageService()
+
+
+StorageDep = Annotated[StorageService, Depends(get_storage_service)]
 
 _bearer = HTTPBearer(auto_error=False)
 

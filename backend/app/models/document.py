@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
@@ -33,3 +34,5 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     size_bytes: Mapped[int] = mapped_column(sa.BigInteger)
     checksum_sha256: Mapped[str] = mapped_column(sa.String(64))
     storage_key: Mapped[str] = mapped_column(sa.String(1024), unique=True)
+    # null = active, set = in trash (soft delete; restorable until permanent delete)
+    deleted_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))

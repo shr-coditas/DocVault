@@ -10,14 +10,18 @@ from app.controller.folder_controller.dto.folder_dto import (
 from app.exceptions import ConflictError, NotFoundError
 from app.models.folder import Folder
 from app.models.user import User
+from app.repository.document_repository import DocumentRepository
 from app.repository.folder_repository import FolderRepository
 from app.services.audit_service import AuditService
+from app.services.storage_service import StorageService
 
 
 class FolderService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, storage: StorageService) -> None:
         self.session = session
+        self.storage = storage
         self.repository = FolderRepository(session)
+        self.documents = DocumentRepository(session)
         self.audit = AuditService(session)
 
     async def create(self, actor: User, workspace_id: uuid.UUID, data: FolderCreate) -> Folder:
@@ -92,6 +96,10 @@ class FolderService:
 
     async def delete(self, actor: User, workspace_id: uuid.UUID, folder_id: uuid.UUID) -> None:
         folder = await self._get(workspace_id, folder_id)
+        # collect object keys BEFORE the rows cascade away — Postgres can't
+        # cascade into MinIO, so we clean the objects up ourselves post-commit
+        subtree = await self.repository.subtree_ids(folder.id)
+        storage_keys = await self.documents.storage_keys_in_folders(subtree)
         self.audit.record(
             action="folder.deleted",
             resource_type="folder",
@@ -100,8 +108,10 @@ class FolderService:
             actor_id=actor.id,
             name=folder.name,
         )
-        await self.repository.delete(folder)  # DB cascades the subtree
+        await self.repository.delete(folder)  # DB cascades the subtree + documents
         await self.session.commit()
+        for key in storage_keys:  # best-effort: a miss leaves a harmless orphan
+            await self.storage.delete(key)
 
     async def _get(self, workspace_id: uuid.UUID, folder_id: uuid.UUID) -> Folder:
         folder = await self.repository.get(folder_id)

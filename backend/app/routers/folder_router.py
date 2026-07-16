@@ -10,7 +10,7 @@ from app.controller.folder_controller.dto.folder_dto import (
     FolderTreeItem,
     FolderUpdate,
 )
-from app.dependencies import DbSession, require_permission
+from app.dependencies import DbSession, StorageDep, require_permission
 from app.models.user import User
 from app.services.folder_service import FolderService
 from app.utils.rbac_catalog import Perm
@@ -18,8 +18,8 @@ from app.utils.rbac_catalog import Perm
 router = APIRouter(prefix="/workspaces/{workspace_id}/folders", tags=["folders"])
 
 
-def get_folder_service(db: DbSession) -> FolderService:
-    return FolderService(db)
+def get_folder_service(db: DbSession, storage: StorageDep) -> FolderService:
+    return FolderService(db, storage)
 
 
 ServiceDep = Annotated[FolderService, Depends(get_folder_service)]

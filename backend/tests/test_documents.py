@@ -9,10 +9,10 @@ from testcontainers.minio import MinioContainer
 from app.config import Settings, get_settings
 from app.db.base import Base
 from app.db.session import get_db
+from app.dependencies import get_storage_service
 from app.main import create_app
-from app.routers.document_router import get_storage_service
 from app.scripts.seed_rbac import sync_rbac_catalog
-from app.services.storage_service import StorageService
+from app.services.storage_service import StorageService, document_key
 from tests.helpers import WORKSPACES, add_member, create_workspace, signup
 
 pytestmark = pytest.mark.integration
@@ -31,7 +31,17 @@ def storage_settings() -> Iterator[Settings]:
 
 
 @pytest.fixture
-async def docs_client(postgres_url: str, storage_settings: Settings) -> AsyncIterator[AsyncClient]:
+async def test_storage(storage_settings: Settings) -> StorageService:
+    """StorageService pointed at the throwaway MinIO (also used for assertions)."""
+    storage = StorageService(storage_settings)
+    await storage.ensure_bucket()
+    return storage
+
+
+@pytest.fixture
+async def docs_client(
+    postgres_url: str, test_storage: StorageService
+) -> AsyncIterator[AsyncClient]:
     """API client wired to throwaway Postgres + MinIO, fresh schema per test."""
     engine = create_async_engine(postgres_url)
     async with engine.begin() as conn:
@@ -41,16 +51,13 @@ async def docs_client(postgres_url: str, storage_settings: Settings) -> AsyncIte
     async with factory() as session:
         await sync_rbac_catalog(session)
 
-    storage = StorageService(storage_settings)
-    await storage.ensure_bucket()
-
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with factory() as session:
             yield session
 
     app = create_app()
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_storage_service] = lambda: storage
+    app.dependency_overrides[get_storage_service] = lambda: test_storage
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
@@ -149,6 +156,154 @@ async def test_viewer_cannot_upload_but_can_download(docs_client: AsyncClient) -
     got = await docs_client.get(f"{_docs_url(ws)}/{doc['id']}/download", headers=viewer)
     assert got.status_code == 200
     assert got.content == b"shared"
+
+
+async def _object_exists(storage: StorageService, key: str) -> bool:
+    try:
+        async for _ in storage.stream(key):
+            break
+        return True
+    except Exception:
+        return False
+
+
+async def test_rename_and_move(docs_client: AsyncClient) -> None:
+    owner = await signup(docs_client, "owner@example.com")
+    ws = await create_workspace(docs_client, owner)
+    folder = await docs_client.post(
+        f"{WORKSPACES}/{ws}/folders", json={"name": "Reports"}, headers=owner
+    )
+    folder_id = folder.json()["id"]
+    doc = await _upload(docs_client, owner, ws, filename="draft.txt")
+
+    renamed = await docs_client.patch(
+        f"{_docs_url(ws)}/{doc['id']}",
+        json={"title": "Final Report", "folder_id": folder_id},
+        headers=owner,
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["title"] == "Final Report"
+    assert renamed.json()["folder_id"] == folder_id
+
+    # move back to root
+    to_root = await docs_client.patch(
+        f"{_docs_url(ws)}/{doc['id']}", json={"folder_id": None}, headers=owner
+    )
+    assert to_root.json()["folder_id"] is None
+
+
+async def test_move_to_foreign_folder_is_404(docs_client: AsyncClient) -> None:
+    owner = await signup(docs_client, "owner@example.com")
+    ws1 = await create_workspace(docs_client, owner, name="One")
+    ws2 = await create_workspace(docs_client, owner, name="Two")
+    foreign = await docs_client.post(
+        f"{WORKSPACES}/{ws2}/folders", json={"name": "Elsewhere"}, headers=owner
+    )
+    doc = await _upload(docs_client, owner, ws1)
+
+    resp = await docs_client.patch(
+        f"{_docs_url(ws1)}/{doc['id']}",
+        json={"folder_id": foreign.json()["id"]},
+        headers=owner,
+    )
+    assert resp.status_code == 404
+
+
+async def test_trash_hides_and_restore_brings_back(docs_client: AsyncClient) -> None:
+    owner = await signup(docs_client, "owner@example.com")
+    ws = await create_workspace(docs_client, owner)
+    doc = await _upload(docs_client, owner, ws, content=b"keep me", filename="keep.txt")
+
+    trashed = await docs_client.delete(f"{_docs_url(ws)}/{doc['id']}", headers=owner)
+    assert trashed.status_code == 204
+
+    # hidden from list / get / download
+    assert (await docs_client.get(_docs_url(ws), headers=owner)).json() == []
+    assert (await docs_client.get(f"{_docs_url(ws)}/{doc['id']}", headers=owner)).status_code == 404
+    assert (
+        await docs_client.get(f"{_docs_url(ws)}/{doc['id']}/download", headers=owner)
+    ).status_code == 404
+
+    # visible in trash
+    trash = await docs_client.get(f"{_docs_url(ws)}/trash", headers=owner)
+    assert [d["id"] for d in trash.json()] == [doc["id"]]
+
+    # restore → back to normal
+    restored = await docs_client.post(f"{_docs_url(ws)}/{doc['id']}/restore", headers=owner)
+    assert restored.status_code == 200
+    assert restored.json()["deleted_at"] is None
+    assert [d["id"] for d in (await docs_client.get(_docs_url(ws), headers=owner)).json()] == [
+        doc["id"]
+    ]
+    download = await docs_client.get(f"{_docs_url(ws)}/{doc['id']}/download", headers=owner)
+    assert download.content == b"keep me"
+
+
+async def test_restore_active_document_is_404(docs_client: AsyncClient) -> None:
+    owner = await signup(docs_client, "owner@example.com")
+    ws = await create_workspace(docs_client, owner)
+    doc = await _upload(docs_client, owner, ws)
+
+    resp = await docs_client.post(f"{_docs_url(ws)}/{doc['id']}/restore", headers=owner)
+    assert resp.status_code == 404
+
+
+async def test_permanent_delete_removes_row_and_object(
+    docs_client: AsyncClient, test_storage: StorageService
+) -> None:
+    owner = await signup(docs_client, "owner@example.com")
+    ws = await create_workspace(docs_client, owner)
+    doc = await _upload(docs_client, owner, ws, filename="gone.txt")
+    key = document_key(ws, doc["id"], 1, "gone.txt")
+    assert await _object_exists(test_storage, key)
+
+    resp = await docs_client.delete(f"{_docs_url(ws)}/{doc['id']}/permanent", headers=owner)
+    assert resp.status_code == 204
+
+    trash = await docs_client.get(f"{_docs_url(ws)}/trash", headers=owner)
+    assert trash.json() == []
+    assert not await _object_exists(test_storage, key)
+
+
+async def test_folder_delete_cleans_up_objects(
+    docs_client: AsyncClient, test_storage: StorageService
+) -> None:
+    owner = await signup(docs_client, "owner@example.com")
+    ws = await create_workspace(docs_client, owner)
+    parent = await docs_client.post(f"{WORKSPACES}/{ws}/folders", json={"name": "P"}, headers=owner)
+    child = await docs_client.post(
+        f"{WORKSPACES}/{ws}/folders",
+        json={"name": "C", "parent_id": parent.json()["id"]},
+        headers=owner,
+    )
+    doc = await _upload(docs_client, owner, ws, filename="nested.txt", folder_id=child.json()["id"])
+    key = document_key(ws, doc["id"], 1, "nested.txt")
+    assert await _object_exists(test_storage, key)
+
+    resp = await docs_client.delete(
+        f"{WORKSPACES}/{ws}/folders/{parent.json()['id']}", headers=owner
+    )
+    assert resp.status_code == 204
+    assert not await _object_exists(test_storage, key)  # no orphan left behind
+
+
+async def test_viewer_cannot_trash_restore_or_delete(docs_client: AsyncClient) -> None:
+    owner = await signup(docs_client, "owner@example.com")
+    viewer = await signup(docs_client, "viewer@example.com")
+    ws = await create_workspace(docs_client, owner)
+    await add_member(docs_client, owner, ws, "viewer@example.com", "viewer")
+    doc = await _upload(docs_client, owner, ws)
+
+    assert (
+        await docs_client.delete(f"{_docs_url(ws)}/{doc['id']}", headers=viewer)
+    ).status_code == 403
+    assert (
+        await docs_client.post(f"{_docs_url(ws)}/{doc['id']}/restore", headers=viewer)
+    ).status_code == 403
+    assert (
+        await docs_client.delete(f"{_docs_url(ws)}/{doc['id']}/permanent", headers=viewer)
+    ).status_code == 403
+    assert (await docs_client.get(f"{_docs_url(ws)}/trash", headers=viewer)).status_code == 403
 
 
 async def test_upload_to_foreign_folder_is_404(docs_client: AsyncClient) -> None:

@@ -1,7 +1,14 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class DocumentUpdate(BaseModel):
+    """Rename and/or move. folder_id=null moves to the workspace root."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    folder_id: uuid.UUID | None = None
 
 
 class DocumentOut(BaseModel):
@@ -17,3 +24,4 @@ class DocumentOut(BaseModel):
     size_bytes: int
     checksum_sha256: str
     created_at: datetime
+    deleted_at: datetime | None
