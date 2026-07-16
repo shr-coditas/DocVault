@@ -15,7 +15,9 @@ Early development — working through the roadmap below.
 - [x] Auth: registration/login, JWT access tokens + refresh token rotation, RFC 9457 errors
 - [x] Workspaces, teams, and role-based access control; audit log
 - [x] Folders and document upload/download (S3-compatible storage, streaming)
-- [ ] Trash & restore, document versioning, tags, metadata
+- [x] Document rename/move, trash & restore, permanent delete
+- [x] Live workspace activity feed (WebSocket)
+- [ ] Document versioning, tags, metadata
 - [ ] Sharing: per-document permissions and visibility levels
 - [ ] Full-text search, filters, sorting, pagination
 - [ ] Hardening: rate limiting, file validation, seed data, API docs polish

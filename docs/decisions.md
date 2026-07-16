@@ -121,3 +121,30 @@ Short notes on non-obvious choices. Newest at the bottom.
 - **Storage injected via a dependency** (`get_storage_service`): tests override
   it to point `StorageService` at a throwaway MinIO (testcontainers), so uploads
   and downloads are exercised against real object storage, not a mock.
+
+## 2026-07-16 — document lifecycle & activity feed
+
+- **Trash-first delete**: `DELETE /documents/{id}` soft-deletes (`deleted_at`),
+  hiding the document from list/get/download (404) while keeping row + object
+  restorable. `DELETE /{id}/permanent` actually removes both. Trash listing and
+  restore sit behind `document:delete` — the trash is for people who can act
+  on it.
+- **Row before object on permanent delete**: commit the row deletion first,
+  then remove the MinIO object. A failed object delete leaves only a harmless
+  orphan; the reverse order could leave a live row pointing at a missing file.
+- **Folder delete now cleans up objects**: Postgres cascades can't reach into
+  MinIO, so `FolderService.delete` collects the subtree's `storage_key`s before
+  the cascade and deletes the objects post-commit — closes the orphan gap noted
+  on 2026-07-15.
+- **Activity feed publishes strictly post-commit**: `AuditService.record()`
+  stages a copy of each audit event on the session; SQLAlchemy `after_commit`
+  publishes it to an in-process broadcaster, `after_rollback` discards it. The
+  feed can never report a change that didn't happen. One audit source feeds
+  both history (DB) and the live stream.
+- **WebSocket auth via `?token=` query param**: browsers cannot set headers on
+  WebSocket connections. Bad token or non-member closes with 1008 (policy
+  violation) — same information-hiding intent as the REST 404 rule.
+- **In-process broadcaster, bounded queues**: per-workspace `asyncio.Queue`s
+  (maxsize 100, drop-on-full) — a slow consumer loses events instead of
+  blocking the app. Single-process by design; a Redis-backed broadcaster is the
+  drop-in replacement if the API ever scales horizontally.
