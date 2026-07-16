@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.db.session import dispose_engine
 from app.exceptions.handlers import register_exception_handlers
 from app.middleware.context import RequestContextMiddleware
+from app.routers.activity_router import router as activity_router
 from app.routers.audit_router import router as audit_router
 from app.routers.auth_router import router as auth_router
 from app.routers.document_router import router as documents_router
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
     api_v1.include_router(documents_router)
     api_v1.include_router(teams_router)
     api_v1.include_router(audit_router)
+    api_v1.include_router(activity_router)
     app.include_router(api_v1)
 
     return app
