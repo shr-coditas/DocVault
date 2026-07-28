@@ -18,6 +18,10 @@ htmlcov/
 # Agent tooling
 .claude/
 
+# Local study and audit notes — AGENTS.md is the tracker, decisions.md the ADR log
+docs/*
+!docs/decisions.md
+
 # OS / editor
 .DS_Store
 Thumbs.db

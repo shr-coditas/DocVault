@@ -1,9 +1,12 @@
 services:
   api:
     build: ./backend
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8080:8000"   # host 8080 so a local `uvicorn --reload` on 8000 can coexist
+    volumes:
+      - ./backend:/app
+      - /app/.venv          # keep the image's venv; the bind mount above would otherwise hide it
     environment:
       DATABASE_URL: postgresql+asyncpg://docvault:docvault@db:5432/docvault
       S3_ENDPOINT_URL: http://minio:9000
@@ -18,6 +21,23 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+
+  streamlit:
+    build: ./streamlit_ui
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./streamlit_ui:/app
+      - /app/.venv          # keep the image's venv; the bind mount above would otherwise hide it
+    environment:
+      API_URL: http://api:8000/api/v1
+      HOME: /home/app
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+      COOKIE_SECURE: "false"   # the demo is served over plain http; set true behind TLS
+    depends_on:
+      api:
+        condition: service_healthy
 
   minio:
     image: minio/minio:latest

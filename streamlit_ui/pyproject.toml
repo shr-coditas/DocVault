@@ -1,0 +1,12 @@
+[project]
+name = "docvault-streamlit"
+version = "0.1.0"
+description = "DocVault Streamlit UI"
+requires-python = ">=3.12"
+dependencies = [
+    "extra-streamlit-components>=0.1.71",
+    "httpx>=0.28.0",
+    "pandas>=2.0.0",
+    "streamlit>=1.57.0",
+    "websockets>=14.0",
+]
