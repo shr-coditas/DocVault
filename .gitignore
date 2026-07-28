@@ -18,7 +18,8 @@ htmlcov/
 # Agent tooling
 .claude/
 
-# Local study and audit notes — AGENTS.md is the tracker, decisions.md the ADR log
+# Local planning and study notes, not part of the shipped project
+AGENTS.md
 docs/*
 !docs/decisions.md
 

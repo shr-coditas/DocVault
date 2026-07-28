@@ -3,11 +3,12 @@
 ![CI](https://github.com/shr-coditas/DocVault/actions/workflows/ci.yml/badge.svg)
 
 Self-hosted document management API: workspaces, teams, role-based access control,
-versioned file storage, sharing, and full-text search.
+streaming file storage, and per-document sharing.
 
 ## Status
 
-Early development — working through the roadmap below.
+Early development. The document-management core is in place; retrieval and
+AI features are next. `AGENTS.md` holds the working plan and current state.
 
 ## Roadmap
 
@@ -17,10 +18,11 @@ Early development — working through the roadmap below.
 - [x] Folders and document upload/download (S3-compatible storage, streaming)
 - [x] Document rename/move, trash & restore, permanent delete
 - [x] Live workspace activity feed (WebSocket)
-- [ ] Document versioning, tags, metadata
-- [ ] Sharing: per-document permissions and visibility levels
-- [ ] Full-text search, filters, sorting, pagination
-- [ ] Hardening: rate limiting, file validation, seed data, API docs polish
+- [x] Sharing: per-document permissions and visibility levels
+- [ ] Document ingestion: text extraction and chunking
+- [ ] Search: semantic, full-text, and hybrid retrieval — filtered by document permissions
+- [ ] Chat over your documents, with citations
+- [ ] Hardening: rate limiting, pagination, seed data, API docs polish
 
 ## Quickstart
 
