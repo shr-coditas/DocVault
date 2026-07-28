@@ -45,3 +45,14 @@ class TeamRepository:
             .order_by(TeamMember.added_at)
         )
         return list((await self.session.execute(stmt)).scalars())
+
+    async def team_ids_for_user(
+        self, workspace_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """IDs of the teams in this workspace that the user belongs to."""
+        stmt = (
+            select(Team.id)
+            .join(TeamMember, TeamMember.team_id == Team.id)
+            .where(Team.workspace_id == workspace_id, TeamMember.user_id == user_id)
+        )
+        return list((await self.session.execute(stmt)).scalars())

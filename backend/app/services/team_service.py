@@ -4,8 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controller.team_controller.dto.team_dto import TeamCreate, TeamMemberOut
 from app.exceptions import ConflictError, NotFoundError
+from app.models.document_grant import PrincipalType
 from app.models.team import Team, TeamMember
 from app.models.user import User
+from app.repository.document_grant_repository import DocumentGrantRepository
 from app.repository.team_repository import TeamRepository
 from app.repository.workspace_repository import WorkspaceRepository
 from app.services.audit_service import AuditService
@@ -16,6 +18,7 @@ class TeamService:
         self.session = session
         self.repository = TeamRepository(session)
         self.workspaces = WorkspaceRepository(session)
+        self.grants = DocumentGrantRepository(session)
         self.audit = AuditService(session)
 
     async def create(self, actor: User, workspace_id: uuid.UUID, data: TeamCreate) -> Team:
@@ -24,7 +27,7 @@ class TeamService:
 
         team = Team(workspace_id=workspace_id, name=data.name)
         self.repository.add(team)
-        await self.session.flush()
+        await self.session.flush()  # materialise team.id for the membership row
         self.audit.record(
             action="team.created",
             resource_type="team",
@@ -32,6 +35,17 @@ class TeamService:
             workspace_id=workspace_id,
             actor_id=actor.id,
             name=team.name,
+        )
+        # you are in the team you create; remove yourself later if you were
+        # only setting it up for other people
+        self.repository.add_member(TeamMember(team_id=team.id, user_id=actor.id))
+        self.audit.record(
+            action="team.member_added",
+            resource_type="team",
+            resource_id=team.id,
+            workspace_id=workspace_id,
+            actor_id=actor.id,
+            member_id=str(actor.id),
         )
         await self.session.commit()
         await self.session.refresh(team)
@@ -50,6 +64,9 @@ class TeamService:
             actor_id=actor.id,
             name=team.name,
         )
+        # grants name the team by a plain uuid, so nothing cascades on its own;
+        # orphans would silently re-grant if the id were ever reused
+        await self.grants.delete_for_principal(workspace_id, PrincipalType.TEAM, team_id)
         await self.repository.delete(team)
         await self.session.commit()
 

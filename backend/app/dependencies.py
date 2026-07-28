@@ -29,7 +29,9 @@ def get_storage_service() -> StorageService:
 
 StorageDep = Annotated[StorageService, Depends(get_storage_service)]
 
-_bearer = HTTPBearer(auto_error=False)
+_bearer = HTTPBearer(
+    auto_error=False
+)  # auto_error= false means that if no credentials are provided, it will return None instead of raising an error. This allows us to handle the case where the user is not authenticated and raise a custom UnauthorizedError.
 
 
 def _unauthorized() -> UnauthorizedError:
@@ -45,10 +47,13 @@ async def get_current_user(
 
     try:
         payload = decode_access_token(credentials.credentials, get_settings().jwt_secret)
-    except jwt.PyJWTError:
+        # a correctly-signed token can still carry a missing or non-uuid `sub`;
+        # that is a bad credential (401), not a server fault (500)
+        user_id = uuid.UUID(payload["sub"])
+    except (jwt.PyJWTError, KeyError, ValueError):
         raise _unauthorized() from None
 
-    user = await UserRepository(db).get(uuid.UUID(payload["sub"]))
+    user = await UserRepository(db).get(user_id)
     if user is None or not user.is_active:
         raise _unauthorized()
     return user

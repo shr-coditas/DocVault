@@ -10,20 +10,27 @@ from app.controller.workspace_controller.dto.workspace_dto import (
     WorkspaceUpdate,
 )
 from app.exceptions import ConflictError, NotFoundError
+from app.models.document_grant import PrincipalType
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
+from app.repository.document_grant_repository import DocumentGrantRepository
+from app.repository.document_repository import DocumentRepository
 from app.repository.rbac_repository import RbacRepository
 from app.repository.user_repository import UserRepository
 from app.repository.workspace_repository import WorkspaceRepository
 from app.services.audit_service import AuditService
 from app.services.permission_service import PermissionService
+from app.services.storage_service import StorageService
 from app.utils.rbac_catalog import OWNER
 
 
 class WorkspaceService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, storage: StorageService) -> None:
         self.session = session
+        self.storage = storage
         self.repository = WorkspaceRepository(session)
+        self.documents = DocumentRepository(session)
+        self.grants = DocumentGrantRepository(session)
         self.users = UserRepository(session)
         self.rbac = RbacRepository(session)
         self.audit = AuditService(session)
@@ -80,6 +87,9 @@ class WorkspaceService:
 
     async def delete(self, actor: User, workspace_id: uuid.UUID) -> None:
         workspace = await self.get(workspace_id)
+        # collect object keys BEFORE the rows cascade away — Postgres can't
+        # cascade into MinIO, so we clean the objects up ourselves post-commit
+        storage_keys = await self.documents.storage_keys_in_workspace(workspace_id)
         self.audit.record(
             action="workspace.deleted",
             resource_type="workspace",
@@ -88,8 +98,10 @@ class WorkspaceService:
             actor_id=actor.id,
             name=workspace.name,
         )
-        await self.repository.delete(workspace)
+        await self.repository.delete(workspace)  # DB cascades documents/folders/teams
         await self.session.commit()
+        for key in storage_keys:  # best-effort: a miss leaves a harmless orphan
+            await self.storage.delete(key)
 
     async def members(self, workspace_id: uuid.UUID) -> list[MemberOut]:
         return [
@@ -173,6 +185,9 @@ class WorkspaceService:
             raise ConflictError("workspace must keep at least one owner")
 
         await self.repository.delete_member(member)
+        # grants name the user by a plain uuid, so nothing cascades on its own;
+        # leaving them behind would restore access if the user is ever re-added
+        await self.grants.delete_for_principal(workspace_id, PrincipalType.USER, user_id)
         self.audit.record(
             action="member.removed",
             resource_type="workspace_member",

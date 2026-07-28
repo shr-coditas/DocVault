@@ -31,6 +31,11 @@ class Settings(BaseSettings):
 
     max_upload_size_bytes: int = 25 * 1024 * 1024  # 25 MiB
 
+    # Deliberately narrow: every accepted type must be one the ingestion
+    # pipeline can extract text from. Widening this widens what has to be
+    # parsed, chunked, and embedded downstream.
+    allowed_upload_extensions: list[str] = [".pdf", ".txt", ".md", ".csv", ".docx"]
+
     cors_origins: list[str] = []
 
 

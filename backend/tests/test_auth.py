@@ -1,5 +1,7 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
+import jwt
 from httpx import AsyncClient
 
 from app.config import get_settings
@@ -106,6 +108,20 @@ async def test_me_rejects_expired_token(db_client: AsyncClient) -> None:
 
     resp = await db_client.get(ME, headers={"Authorization": f"Bearer {expired}"})
     assert resp.status_code == 401
+
+
+async def test_me_rejects_wellformed_token_with_a_bad_subject(db_client: AsyncClient) -> None:
+    """Correctly signed but carrying junk in `sub`: a bad credential (401),
+    not a server fault (500)."""
+    settings = get_settings()
+    for claims in ({"sub": "not-a-uuid", "typ": "access"}, {"typ": "access"}):
+        token = jwt.encode(
+            {**claims, "exp": datetime.now(UTC) + timedelta(minutes=5)},
+            settings.jwt_secret,
+            algorithm="HS256",
+        )
+        resp = await db_client.get(ME, headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 401, resp.text
 
 
 async def test_refresh_rotates_the_token(db_client: AsyncClient) -> None:

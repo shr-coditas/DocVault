@@ -13,7 +13,7 @@ from app.controller.workspace_controller.dto.workspace_dto import (
     WorkspaceUpdate,
     WorkspaceWithRoleOut,
 )
-from app.dependencies import CurrentUser, DbSession, require_permission
+from app.dependencies import CurrentUser, DbSession, StorageDep, require_permission
 from app.models.user import User
 from app.services.workspace_service import WorkspaceService
 from app.utils.rbac_catalog import Perm
@@ -21,8 +21,8 @@ from app.utils.rbac_catalog import Perm
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 
-def get_workspace_service(db: DbSession) -> WorkspaceService:
-    return WorkspaceService(db)
+def get_workspace_service(db: DbSession, storage: StorageDep) -> WorkspaceService:
+    return WorkspaceService(db, storage)
 
 
 ServiceDep = Annotated[WorkspaceService, Depends(get_workspace_service)]

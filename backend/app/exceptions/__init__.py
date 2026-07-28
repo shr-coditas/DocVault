@@ -48,6 +48,11 @@ class PayloadTooLargeError(AppError):
     title = "Content Too Large"
 
 
+class UnsupportedMediaTypeError(AppError):
+    status_code = status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+    title = "Unsupported Media Type"
+
+
 __all__ = [
     "AppError",
     "ConflictError",
@@ -55,4 +60,5 @@ __all__ = [
     "NotFoundError",
     "PayloadTooLargeError",
     "UnauthorizedError",
+    "UnsupportedMediaTypeError",
 ]

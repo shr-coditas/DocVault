@@ -22,6 +22,33 @@ async def test_create_and_list_teams(db_client: AsyncClient) -> None:
     assert [t["name"] for t in listed.json()] == ["Platform"]
 
 
+async def test_creator_is_a_member_of_the_team_they_create(db_client: AsyncClient) -> None:
+    """You are in the team you create — an empty team reads as a broken one."""
+    owner = await signup(db_client, "owner@example.com")
+    workspace_id = await create_workspace(db_client, owner)
+    team_id = (
+        await db_client.post(
+            f"{WORKSPACES}/{workspace_id}/teams", json={"name": "Platform"}, headers=owner
+        )
+    ).json()["id"]
+
+    listed = await db_client.get(
+        f"{WORKSPACES}/{workspace_id}/teams/{team_id}/members", headers=owner
+    )
+    assert [m["email"] for m in listed.json()] == ["owner@example.com"]
+
+    # and they can step back out, for the admin who set the team up for others
+    owner_id = await _user_id(db_client, owner)
+    removed = await db_client.delete(
+        f"{WORKSPACES}/{workspace_id}/teams/{team_id}/members/{owner_id}", headers=owner
+    )
+    assert removed.status_code == 204
+    emptied = await db_client.get(
+        f"{WORKSPACES}/{workspace_id}/teams/{team_id}/members", headers=owner
+    )
+    assert emptied.json() == []
+
+
 async def test_duplicate_team_name_in_workspace_is_409(db_client: AsyncClient) -> None:
     owner = await signup(db_client, "owner@example.com")
     workspace_id = await create_workspace(db_client, owner)
@@ -76,7 +103,8 @@ async def test_add_list_and_remove_team_member(db_client: AsyncClient) -> None:
     listed = await db_client.get(
         f"{WORKSPACES}/{workspace_id}/teams/{team_id}/members", headers=owner
     )
-    assert [m["email"] for m in listed.json()] == ["member@example.com"]
+    # the creator is seeded in first, then the member we just added
+    assert [m["email"] for m in listed.json()] == ["owner@example.com", "member@example.com"]
 
     removed = await db_client.delete(
         f"{WORKSPACES}/{workspace_id}/teams/{team_id}/members/{member_id}", headers=owner
