@@ -14,6 +14,8 @@ from app.routers.auth_router import router as auth_router
 from app.routers.document_router import router as documents_router
 from app.routers.folder_router import router as folders_router
 from app.routers.health_router import router as health_router
+from app.routers.query_router import router as query_router
+from app.routers.search_router import router as search_router
 from app.routers.team_router import router as teams_router
 from app.routers.workspace_router import router as workspaces_router
 from app.utils.logging import configure_logging
@@ -49,6 +51,8 @@ def create_app() -> FastAPI:
     api_v1.include_router(workspaces_router)
     api_v1.include_router(folders_router)
     api_v1.include_router(documents_router)
+    api_v1.include_router(search_router)
+    api_v1.include_router(query_router)
     api_v1.include_router(teams_router)
     api_v1.include_router(audit_router)
     api_v1.include_router(activity_router)

@@ -53,6 +53,11 @@ class UnsupportedMediaTypeError(AppError):
     title = "Unsupported Media Type"
 
 
+class UnprocessableEntityError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    title = "Unprocessable Entity"
+
+
 __all__ = [
     "AppError",
     "ConflictError",
@@ -60,5 +65,6 @@ __all__ = [
     "NotFoundError",
     "PayloadTooLargeError",
     "UnauthorizedError",
+    "UnprocessableEntityError",
     "UnsupportedMediaTypeError",
 ]

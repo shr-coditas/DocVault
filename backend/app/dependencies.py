@@ -14,7 +14,10 @@ from app.db.session import get_db
 from app.exceptions import UnauthorizedError
 from app.models.user import User
 from app.repository.user_repository import UserRepository
+from app.services.embedding_service import Embedder, get_default_embedder
+from app.services.llm_service import ChatModel, get_default_chat_model
 from app.services.permission_service import PermissionService
+from app.services.reranking_service import Reranker, get_default_reranker
 from app.services.storage_service import StorageService
 from app.utils.rbac_catalog import Perm
 from app.utils.security import decode_access_token
@@ -28,6 +31,36 @@ def get_storage_service() -> StorageService:
 
 
 StorageDep = Annotated[StorageService, Depends(get_storage_service)]
+
+
+def get_embedder() -> Embedder:
+    """Embedding seam: tests override this with a deterministic in-process fake,
+    so the suite needs no model download and no network."""
+    return get_default_embedder()
+
+
+EmbedderDep = Annotated[Embedder, Depends(get_embedder)]
+
+
+def get_reranker() -> Reranker:
+    return get_default_reranker()
+
+
+RerankerDep = Annotated[Reranker, Depends(get_reranker)]
+
+
+def get_chat_model() -> ChatModel:
+    """Generation seam, overridden in tests exactly as the embedder is.
+
+    Resolving the singleton here rather than at import time is what lets a
+    deployment with no API key still start: ``LangChainChatModel`` builds its
+    client on first ``complete()``, so nothing reaches a provider until a
+    question actually retrieves something worth answering.
+    """
+    return get_default_chat_model()
+
+
+ChatModelDep = Annotated[ChatModel, Depends(get_chat_model)]
 
 _bearer = HTTPBearer(
     auto_error=False
