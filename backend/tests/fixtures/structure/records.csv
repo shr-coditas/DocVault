@@ -1,0 +1,3 @@
+employee_id,department,active,start_date
+E-001,Finance,true,2025-01-10
+E-002,Engineering,false,2024-09-03
