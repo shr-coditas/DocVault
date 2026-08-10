@@ -8,3 +8,10 @@ __pycache__/
 htmlcov/
 .env
 .vscode/
+
+# Model caches must never enter the build context. A relative FASTEMBED_CACHE_DIR
+# lands one here (the image bakes its own at /opt/models), and Docker refuses to
+# load a context containing the resulting path at all - the directory Windows
+# creates for a drive-letter path is named with U+F03A, which the context loader
+# rejects outright, failing the build before any layer runs.
+**/.cache/

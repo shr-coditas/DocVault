@@ -28,3 +28,4 @@ docs/*
 Thumbs.db
 .idea/
 .vscode/
+tmp
