@@ -1,41 +1,26 @@
 import hashlib
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from testcontainers.minio import MinioContainer
 
-from app.config import Settings, get_settings
+from app.config import get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.dependencies import get_storage_service
 from app.main import create_app
-from app.scripts.seed_rbac import sync_rbac_catalog
 from app.services.storage_service import StorageService, document_key
-from tests.helpers import WORKSPACES, add_member, create_workspace, signup
+from tests.helpers import (
+    WORKSPACES,
+    add_member,
+    create_schema,
+    create_workspace,
+    signup,
+    sync_rbac_catalog,
+)
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(scope="session")
-def storage_settings() -> Iterator[Settings]:
-    with MinioContainer() as minio:
-        cfg = minio.get_config()
-        yield Settings(
-            s3_endpoint_url=f"http://{cfg['endpoint']}",
-            s3_access_key=cfg["access_key"],
-            s3_secret_key=cfg["secret_key"],
-            s3_bucket="test-bucket",
-        )
-
-
-@pytest.fixture
-async def test_storage(storage_settings: Settings) -> StorageService:
-    """StorageService pointed at the throwaway MinIO (also used for assertions)."""
-    storage = StorageService(storage_settings)
-    await storage.ensure_bucket()
-    return storage
 
 
 @pytest.fixture
@@ -44,8 +29,7 @@ async def docs_client(
 ) -> AsyncIterator[AsyncClient]:
     """API client wired to throwaway Postgres + MinIO, fresh schema per test."""
     engine = create_async_engine(postgres_url)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await create_schema(engine)
 
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
@@ -389,7 +373,7 @@ async def test_workspace_delete_cleans_up_objects(
     resp = await docs_client.delete(f"{WORKSPACES}/{ws}", headers=owner)
     assert resp.status_code == 204
 
-    # every object goes with the workspace — active, nested, and trashed alike
+    # every object goes with the workspace - active, nested, and trashed alike
     for key in keys:
         assert not await _object_exists(test_storage, key)
 
@@ -586,7 +570,7 @@ async def _grant(
 
 
 async def test_joining_a_granted_team_later_grants_access(docs_client: AsyncClient) -> None:
-    """Grant first, join second — the order users actually hit in practice.
+    """Grant first, join second - the order users actually hit in practice.
 
     Access is resolved from team membership at query time, so a member added
     after the fact must see the document without anyone re-sharing it.
@@ -664,7 +648,7 @@ async def test_user_grant_works_on_a_team_document(docs_client: AsyncClient) -> 
 
 
 async def test_grants_do_not_survive_removing_the_member(docs_client: AsyncClient) -> None:
-    """Grants name users by bare uuid, so nothing cascades — re-adding someone
+    """Grants name users by bare uuid, so nothing cascades - re-adding someone
     must not silently restore access they were granted before."""
     owner = await signup(docs_client, "owner@example.com")
     member = await signup(docs_client, "member@example.com")

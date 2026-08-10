@@ -36,7 +36,7 @@ class StorageService:
             )
 
     async def stream(self, key: str) -> AsyncIterator[bytes]:
-        """Yield the object in chunks — callers never hold the whole file in memory."""
+        """Yield the object in chunks - callers never hold the whole file in memory."""
         async with self._client() as s3:
             obj = await s3.get_object(Bucket=self.settings.s3_bucket, Key=key)
             body = obj["Body"]
@@ -46,9 +46,43 @@ class StorageService:
             finally:
                 body.close()
 
+    async def read_all(self, key: str) -> bytes:
+        """Whole object in memory.
+
+        Safe because uploads are capped at ``max_upload_size_bytes``. Parsing
+        needs the complete file anyway - pypdf and python-docx both seek - so
+        streaming would only move the buffer, not remove it.
+        """
+        buffer = bytearray()
+        async for chunk in self.stream(key):
+            buffer.extend(chunk)
+        return bytes(buffer)
+
     async def delete(self, key: str) -> None:
         async with self._client() as s3:
             await s3.delete_object(Bucket=self.settings.s3_bucket, Key=key)
+
+    async def delete_prefix(self, prefix: str) -> None:
+        """Delete every object below one already-validated document prefix."""
+        async with self._client() as s3:
+            continuation: str | None = None
+            while True:
+                kwargs: dict[str, Any] = {
+                    "Bucket": self.settings.s3_bucket,
+                    "Prefix": prefix,
+                }
+                if continuation is not None:
+                    kwargs["ContinuationToken"] = continuation
+                response = await s3.list_objects_v2(**kwargs)
+                # Use single-object deletion for compatibility with older MinIO
+                # releases, which require an SDK-specific Content-MD5 header on
+                # the multi-delete operation. Prefix cleanup is a background or
+                # permanent-delete path, not a request hot path.
+                for row in response.get("Contents", []):
+                    await s3.delete_object(Bucket=self.settings.s3_bucket, Key=row["Key"])
+                if not response.get("IsTruncated"):
+                    break
+                continuation = response.get("NextContinuationToken")
 
     async def ensure_bucket(self) -> None:
         """Create the bucket if missing (dev/test convenience; prod uses IaC)."""
@@ -61,3 +95,15 @@ class StorageService:
 
 def document_key(workspace_id: str, document_id: str, version: int, filename: str) -> str:
     return f"ws_{workspace_id}/doc_{document_id}/v{version}_{filename}"
+
+
+def document_prefix(workspace_id: str, document_id: str) -> str:
+    return f"ws_{workspace_id}/doc_{document_id}/"
+
+
+def index_artifact_key(workspace_id: str, document_id: str, generation: int) -> str:
+    return f"{document_prefix(workspace_id, document_id)}index/g{generation}/extraction.json.gz"
+
+
+def document_prefix_from_key(storage_key: str) -> str:
+    return f"{storage_key.rsplit('/', 1)[0]}/"

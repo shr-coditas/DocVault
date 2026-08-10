@@ -86,6 +86,50 @@ class DocumentRepository:
             stmt = stmt.where(self._accessible_condition(*access))
         return list((await self.session.execute(stmt)).scalars())
 
+    async def unindexed_ids(
+        self,
+        *,
+        limit: int,
+        workspace_id: uuid.UUID | None = None,
+        max_attempts: int | None = None,
+    ) -> list[uuid.UUID]:
+        """Documents the indexing script should pick up, oldest first.
+
+        Ids only, not ORM objects: the caller gives each document its own
+        transaction, so holding rows from this query open would be pointless.
+        Served by the partial index ``ix_documents_unindexed``.
+        """
+        stmt = (
+            select(Document.id)
+            .where(Document.indexed.is_(False), Document.deleted_at.is_(None))
+            .order_by(Document.created_at)
+            .limit(limit)
+        )
+        if workspace_id is not None:
+            stmt = stmt.where(Document.workspace_id == workspace_id)
+        if max_attempts is not None:
+            # stops one unparseable file consuming every future run
+            stmt = stmt.where(Document.index_attempts < max_attempts)
+        return list((await self.session.execute(stmt)).scalars())
+
+    async def claim_for_indexing(self, document_id: uuid.UUID) -> Document | None:
+        """Lock one document for indexing, or return None if someone else has it.
+
+        ``SKIP LOCKED`` costs nothing for today's single-runner script and is
+        exactly the primitive a competing-consumer worker pool needs, so the
+        claim semantics do not have to be redesigned later.
+        """
+        stmt = (
+            select(Document)
+            .where(
+                Document.id == document_id,
+                Document.indexed.is_(False),
+                Document.deleted_at.is_(None),
+            )
+            .with_for_update(skip_locked=True)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
     async def storage_keys_in_workspace(self, workspace_id: uuid.UUID) -> list[str]:
         """Storage keys of every document (active or trashed) in a workspace."""
         stmt = select(Document.storage_key).where(Document.workspace_id == workspace_id)

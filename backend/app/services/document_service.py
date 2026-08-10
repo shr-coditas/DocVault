@@ -20,8 +20,9 @@ from app.repository.document_repository import DocumentRepository
 from app.repository.folder_repository import FolderRepository
 from app.repository.team_repository import TeamRepository
 from app.services.audit_service import AuditService
+from app.services.document_access import AccessFilter, document_access_filter
 from app.services.permission_service import PermissionService
-from app.services.storage_service import CHUNK_SIZE, StorageService, document_key
+from app.services.storage_service import CHUNK_SIZE, StorageService, document_key, document_prefix
 from app.utils.rbac_catalog import OWNER
 
 DEFAULT_MIME = "application/octet-stream"
@@ -86,7 +87,7 @@ class DocumentService:
         return document
 
     async def get(self, actor: User, workspace_id: uuid.UUID, document_id: uuid.UUID) -> Document:
-        """Active documents only — trashed ones are invisible here (404)."""
+        """Active documents only - trashed ones are invisible here (404)."""
         document = await self._get_any(actor, workspace_id, document_id)
         if document.deleted_at is not None:
             raise NotFoundError("document not found")
@@ -126,6 +127,7 @@ class DocumentService:
             document.folder_id = changes["folder_id"]
         if changes.get("title"):
             document.title = changes["title"]
+            document.indexed = False
 
         self.audit.record(
             action="document.updated",
@@ -182,7 +184,7 @@ class DocumentService:
         """Remove the row, then the object. DB first: a failed object delete
         leaves a harmless orphan, never a row pointing at a missing file."""
         document = await self._get_any(actor, workspace_id, document_id)
-        key = document.storage_key
+        prefix = document_prefix(str(workspace_id), str(document.id))
         self.audit.record(
             action="document.deleted",
             resource_type="document",
@@ -193,7 +195,7 @@ class DocumentService:
         )
         await self.repository.delete(document)
         await self.session.commit()
-        await self.storage.delete(key)
+        await self.storage.delete_prefix(prefix)
 
     # -- sharing -----------------------------------------------------------
 
@@ -329,7 +331,7 @@ class DocumentService:
 
         ``workspace`` visibility is open to the whole workspace; ``private`` and
         ``team`` both mean *restricted*, and are opened up by grants. A grant
-        counts the same whether it names a user or a team — visibility decides
+        counts the same whether it names a user or a team - visibility decides
         whether grants are consulted, never which kind of grant is honoured.
         """
         if document.visibility == DocumentVisibility.WORKSPACE:
@@ -346,15 +348,13 @@ class DocumentService:
             return
         raise NotFoundError("document not found")
 
-    async def _access_filter(
-        self, actor: User, workspace_id: uuid.UUID
-    ) -> tuple[uuid.UUID, list[uuid.UUID]] | None:
-        """Access params for list queries; None = admin (no visibility filter)."""
-        role = await self.permissions.workspace_role_name(actor.id, workspace_id)
-        if role == OWNER:
-            return None
-        team_ids = await self.teams.team_ids_for_user(workspace_id, actor.id)
-        return actor.id, team_ids
+    async def _access_filter(self, actor: User, workspace_id: uuid.UUID) -> AccessFilter:
+        """Access params for list queries; None = admin (no visibility filter).
+
+        Delegated: retrieval needs the identical answer, and two copies of the
+        owner override would drift (see ``document_access``).
+        """
+        return await document_access_filter(self.session, actor.id, workspace_id)
 
     async def _require_principal(
         self, workspace_id: uuid.UUID, principal_type: PrincipalType, principal_id: uuid.UUID
