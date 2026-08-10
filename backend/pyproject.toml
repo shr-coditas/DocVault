@@ -1,7 +1,7 @@
 [project]
 name = "docvault-backend"
 version = "0.1.0"
-description = "DocVault API — document management platform"
+description = "DocVault API - document management platform"
 requires-python = ">=3.12"
 dependencies = [
     "aioboto3>=15.5.0",
@@ -9,9 +9,18 @@ dependencies = [
     "asyncpg>=0.30.0",
     "email-validator>=2.3.0",
     "fastapi>=0.139.0",
+    "fastembed>=0.5.0",
+    "langchain>=0.3",
+    "langchain-google-genai>=4.3.2",
+    "langchain-groq>=0.2",
+    "markdown-it-py>=3.0.0",
+    "mdit-py-plugins>=0.4.2",
+    "pgvector>=0.3.6",
     "pwdlib[argon2]>=0.3.0",
     "pydantic-settings>=2.14.2",
     "pyjwt>=2.13.0",
+    "pypdf>=5.1.0",
+    "python-docx>=1.1.2",
     "python-multipart>=0.0.20",
     "sqlalchemy>=2.0.51",
     "structlog>=25.1.0",
@@ -19,8 +28,25 @@ dependencies = [
     "uvicorn[standard]>=0.51.0",
 ]
 
+[project.optional-dependencies]
+ingestion = [
+    "docling>=2.60.0",
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [dependency-groups]
 dev = [
+    "debugpy>=1.8.21",
     "httpx>=0.28.0",
     "mypy>=1.15.0",
     "pre-commit>=4.0.0",
@@ -50,7 +76,7 @@ warn_unused_ignores = true
 exclude = ["app/db/alembic/versions"]
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "aioboto3", "botocore.*"]
+module = ["testcontainers.*", "aioboto3", "botocore.*", "fastembed.*", "pgvector.*", "docx", "docx.*", "docling.*", "markdown_it.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
