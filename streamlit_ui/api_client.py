@@ -84,7 +84,7 @@ def _request(
             method, f"{base_url()}{path}", headers=_headers(), timeout=timeout, **kwargs
         )
     if resp.status_code == 401:
-        # refresh failed too — drop the session so the shell shows login again
+        # refresh failed too - drop the session so the shell shows login again
         st.session_state.pop("access_token", None)
         st.session_state.pop("refresh_token", None)
         session.forget()
@@ -182,9 +182,7 @@ def delete_team(workspace_id: str, team_id: str) -> None:
 
 
 def list_team_members(workspace_id: str, team_id: str) -> list[dict[str, Any]]:
-    return _request(
-        "GET", f"/workspaces/{workspace_id}/teams/{team_id}/members"
-    ).json()
+    return _request("GET", f"/workspaces/{workspace_id}/teams/{team_id}/members").json()
 
 
 def add_team_member(workspace_id: str, team_id: str, user_id: str) -> None:
@@ -196,9 +194,7 @@ def add_team_member(workspace_id: str, team_id: str, user_id: str) -> None:
 
 
 def remove_team_member(workspace_id: str, team_id: str, user_id: str) -> None:
-    _request(
-        "DELETE", f"/workspaces/{workspace_id}/teams/{team_id}/members/{user_id}"
-    )
+    _request("DELETE", f"/workspaces/{workspace_id}/teams/{team_id}/members/{user_id}")
 
 
 # --- folders ------------------------------------------------------------
@@ -299,6 +295,53 @@ def list_trash(workspace_id: str) -> list[dict[str, Any]]:
 
 def delete_document_permanently(workspace_id: str, document_id: str) -> None:
     _request("DELETE", f"/workspaces/{workspace_id}/documents/{document_id}/permanent")
+
+
+# --- document questions -------------------------------------------------
+
+
+def query_documents(
+    workspace_id: str,
+    question: str,
+    *,
+    document_ids: list[str] | None = None,
+    retrieval_mode: str = "hybrid",
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Ask one independent question within an explicit document scope.
+
+    ``None`` means every accessible document in the workspace. A concrete list
+    is converted to the API's singular/plural filters so both branches exercise
+    the public contract rather than inventing a Streamlit-only shape.
+    """
+    body: dict[str, Any] = {
+        "query": question,
+        "retrieval_mode": retrieval_mode,
+        "limit": limit,
+    }
+    if document_ids is not None:
+        unique_ids = list(dict.fromkeys(document_ids))
+        if not unique_ids:
+            raise ValueError("at least one document must be selected")
+        if len(unique_ids) > 10:
+            raise ValueError("at most 10 documents may be selected")
+        if len(unique_ids) == 1:
+            body["document_id"] = unique_ids[0]
+        else:
+            body["document_ids"] = unique_ids
+    try:
+        return _request(
+            "POST",
+            f"/workspaces/{workspace_id}/query",
+            json=body,
+            timeout=90.0,
+        ).json()
+    except httpx.TimeoutException as exc:
+        raise ApiError(504, "The answer took too long. Please try again.") from exc
+    except httpx.HTTPError as exc:
+        raise ApiError(
+            503, "DocVault is temporarily unavailable. Please try again."
+        ) from exc
 
 
 # --- sharing ------------------------------------------------------------

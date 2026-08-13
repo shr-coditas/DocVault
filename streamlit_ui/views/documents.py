@@ -1,4 +1,4 @@
-"""Documents — folder browsing, upload, list + inline preview, lifecycle actions."""
+"""Documents - folder browsing, upload, list + inline preview, lifecycle actions."""
 
 import io
 import json
@@ -7,11 +7,12 @@ from typing import Any
 import streamlit as st
 
 import api_client as api
+import chat_state
 
 workspace_id = st.session_state["current_workspace_id"]
 
 # viewers get document:read and nothing else, so every mutating control here
-# would 403 for them — hide it rather than let them click into an error
+# would 403 for them - hide it rather than let them click into an error
 my_role = next(
     (
         w["my_role"]
@@ -55,7 +56,9 @@ def _fmt_size(size: int) -> str:
 
 def _visibility_badge(doc: dict[str, Any]) -> str:
     """Trailing caption fragment; workspace-visible is the default, so stays quiet."""
-    return "" if doc.get("visibility", "workspace") == "workspace" else " · 🔒 restricted"
+    return (
+        "" if doc.get("visibility", "workspace") == "workspace" else " · 🔒 restricted"
+    )
 
 
 def _get_bytes(doc: dict[str, Any]) -> bytes | None:
@@ -99,7 +102,7 @@ def _preview(doc: dict[str, Any], data: bytes) -> None:
     elif mime.startswith("text/"):
         st.code(text(), language=None)
     else:
-        st.info("No inline preview for this file type — use Download instead.")
+        st.info("No inline preview for this file type - use Download instead.")
 
 
 @st.dialog("Rename or move")
@@ -139,7 +142,7 @@ AUDIENCE_LABELS = {
 }
 AUDIENCE_HELP = {
     RESTRICTED: "Only you, workspace owners, and the people and teams you share with below.",
-    EVERYONE: "Everyone in this workspace. Nothing to share — they already have it.",
+    EVERYONE: "Everyone in this workspace. Nothing to share - they already have it.",
 }
 
 
@@ -189,7 +192,9 @@ def _share_dialog(doc: dict[str, Any]) -> None:
                 except api.ApiError as e:
                     st.error(f"Could not change who can see it: {e.detail}")
         elif current == EVERYONE:
-            st.info("Everyone in the workspace can already see this — nothing to share.")
+            st.info(
+                "Everyone in the workspace can already see this - nothing to share."
+            )
         else:
             _sharing_section(doc)
 
@@ -224,7 +229,7 @@ def _sharing_section(doc: dict[str, Any]) -> None:
     st.divider()
     st.markdown("**Has access**")
     if not grants:
-        st.caption("Nobody else yet — add a person or a team below.")
+        st.caption("Nobody else yet - add a person or a team below.")
     for grant in grants:
         kind, pid = grant["principal_type"], grant["principal_id"]
         label = (user_names if kind == "user" else team_names).get(pid, pid)
@@ -267,7 +272,7 @@ def _sharing_section(doc: dict[str, Any]) -> None:
 # --- toolbar -------------------------------------------------------------
 
 # Dialogs, not popovers: a popover collapses on the rerun that follows its own
-# submit, so validation errors and failures flash past unread — and the widget
+# submit, so validation errors and failures flash past unread - and the widget
 # values inside it don't survive to be read either.
 
 
@@ -296,7 +301,7 @@ def _upload_dialog() -> None:
     with st.form("upload_form"):
         uploaded = st.file_uploader("Choose a file")
         folder_label = st.selectbox("Folder", list(folder_options))
-        title = st.text_input("Title (optional — defaults to the file name)")
+        title = st.text_input("Title (optional - defaults to the file name)")
         submitted = st.form_submit_button("Upload")
     if not submitted:
         return
@@ -349,7 +354,7 @@ list_col, detail_col = st.columns([2, 3], gap="large")
 
 with list_col:
     if not documents:
-        st.caption("No documents here yet — upload one with the button above.")
+        st.caption("No documents here yet - upload one with the button above.")
     selected_id = st.session_state.get("selected_document_id")
     for doc in documents:
         is_selected = doc["id"] == selected_id
@@ -382,6 +387,29 @@ with detail_col:
             f" · uploaded {str(selected.get('created_at', ''))[:10]}"
             f"{_visibility_badge(selected)}"
         )
+        searchable = selected.get("search_status") == "ready"
+        if st.button(
+            "💬 Ask this document",
+            key=f"ask-{selected['id']}",
+            type="primary",
+            width="stretch",
+            disabled=not searchable,
+            help=(
+                "Open Ask DocVault with this document selected."
+                if searchable
+                else "This document must finish indexing before it can answer questions."
+            ),
+        ):
+            chat_state.open_document(workspace_id, str(selected["id"]))
+            st.switch_page("views/chat.py")
+        if not searchable:
+            status = selected.get("search_status", "waiting_for_index")
+            detail = (
+                "Indexing failed."
+                if status == "indexing_failed"
+                else "Waiting for indexing."
+            )
+            st.caption(f"Search unavailable · {detail}")
         data = _get_bytes(selected)
         action_cols = st.columns(4)
         if data is not None:

@@ -1,4 +1,4 @@
-"""DocVault demo UI — shell: auth gate → workspace gate → contextual nav.
+"""DocVault demo UI - shell: auth gate → workspace gate → contextual nav.
 
 Navigation is computed from session state with st.navigation, so the
 sidebar only ever shows what makes sense *right now*:
@@ -13,6 +13,7 @@ import streamlit as st
 
 import activity
 import api_client as api
+import chat_state
 import session
 
 st.set_page_config(page_title="DocVault", page_icon="\U0001f4c1", layout="wide")
@@ -22,6 +23,7 @@ st.session_state.setdefault("api_base_url", api.DEFAULT_BASE_URL)
 
 def _logout() -> None:
     activity.stop_feed()
+    chat_state.clear()
     refresh_token = st.session_state.get("refresh_token")
     if refresh_token:
         api.logout(refresh_token)  # revoke the family; local keys aren't enough
@@ -41,6 +43,7 @@ def _logout() -> None:
 
 def _leave_workspace() -> None:
     activity.stop_feed()
+    chat_state.clear()
     st.session_state["force_workspace_picker"] = True
     for key in ("current_workspace_id", "selected_document_id", "doc_bytes_cache"):
         st.session_state.pop(key, None)
@@ -61,8 +64,8 @@ session.mount()
 session.sync()  # apply cookie changes queued by the previous run
 if not st.session_state.get("access_token") and not session.restore():
     # The component answers one run late, so its first "no cookies" means
-    # "not yet". Hold the page — mounted, so the browser posts the cookies and
-    # reruns us — rather than flashing the login screen at a signed-in user.
+    # "not yet". Hold the page - mounted, so the browser posts the cookies and
+    # reruns us - rather than flashing the login screen at a signed-in user.
     if not st.session_state.get("_cookie_probe"):
         st.session_state["_cookie_probe"] = True
         st.info("Restoring your session…")
@@ -128,6 +131,7 @@ with st.sidebar:
     chosen = st.selectbox("Workspace", label_list, index=current_index)
     if labels[chosen] != current_id:
         activity.stop_feed()
+        chat_state.clear()
         st.session_state["current_workspace_id"] = labels[chosen]
         for key in ("selected_document_id", "doc_bytes_cache"):
             st.session_state.pop(key, None)
@@ -144,6 +148,7 @@ with head_right:
 
 pages = [
     st.Page("views/documents.py", title="Documents", icon="📄", default=True),
+    st.Page("views/chat.py", title="Ask DocVault", icon="💬"),
     st.Page("views/members.py", title="Members", icon="👥"),
     st.Page("views/teams.py", title="Teams", icon="🤝"),
     st.Page("views/trash.py", title="Trash", icon="🗑️"),
