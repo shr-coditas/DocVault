@@ -20,7 +20,7 @@ AI features are next. `AGENTS.md` holds the working plan and current state.
 - [x] Live workspace activity feed (WebSocket)
 - [x] Sharing: per-document permissions and visibility levels
 - [ ] Document ingestion: text extraction and chunking
-- [ ] Search: semantic, full-text, and hybrid retrieval — filtered by document permissions
+- [ ] Search: semantic, full-text, and hybrid retrieval - filtered by document permissions
 - [ ] Chat over your documents, with citations
 - [ ] Hardening: rate limiting, pagination, seed data, API docs polish
 
@@ -46,7 +46,7 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-- API: http://localhost:8000 — interactive docs at `/docs`
+- API: http://localhost:8000 - interactive docs at `/docs`
 - Health: `GET /health` (liveness), `GET /health/ready` (checks DB connectivity)
 
 Configuration is environment-driven with local defaults that match
@@ -67,7 +67,7 @@ uv · Ruff · mypy · pytest
 
 ## Project layout
 
-Layered architecture — each request flows through one layer at a time:
+Layered architecture - each request flows through one layer at a time:
 
 ```
 routers/  →  controller/  →  services/  →  repository/  →  db

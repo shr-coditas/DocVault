@@ -23,7 +23,7 @@ async def test_create_and_list_teams(db_client: AsyncClient) -> None:
 
 
 async def test_creator_is_a_member_of_the_team_they_create(db_client: AsyncClient) -> None:
-    """You are in the team you create — an empty team reads as a broken one."""
+    """You are in the team you create - an empty team reads as a broken one."""
     owner = await signup(db_client, "owner@example.com")
     workspace_id = await create_workspace(db_client, owner)
     team_id = (

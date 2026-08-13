@@ -45,7 +45,7 @@ class AuditService:
             )
         )
         if workspace_id is not None:
-            # mirrored onto the live activity feed — published only post-commit
+            # mirrored onto the live activity feed - published only post-commit
             stage_activity_event(
                 self.session,
                 {

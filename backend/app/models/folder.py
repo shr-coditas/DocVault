@@ -10,7 +10,7 @@ class Folder(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Adjacency-list tree: each folder points at its parent (NULL = root).
 
     `postgresql_nulls_not_distinct` makes the unique constraint also apply to
-    root folders — plain UNIQUE treats NULLs as distinct, which would allow
+    root folders - plain UNIQUE treats NULLs as distinct, which would allow
     duplicate root names.
     """
 

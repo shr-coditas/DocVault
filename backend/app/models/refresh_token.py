@@ -12,7 +12,7 @@ class RefreshToken(Base):
     """One row per issued refresh token.
 
     Tokens rotate on every use; rows in one `family_id` descend from a single
-    login. A revoked token being presented again means theft/reuse — the whole
+    login. A revoked token being presented again means theft/reuse - the whole
     family gets revoked.
     """
 
