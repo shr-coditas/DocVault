@@ -85,6 +85,7 @@ async def test_upload_returns_metadata(docs_client: AsyncClient) -> None:
     assert doc["size_bytes"] == len(content)
     assert doc["checksum_sha256"] == hashlib.sha256(content).hexdigest()
     assert doc["mime_type"] == "text/plain"
+    assert doc["search_status"] == "waiting_for_index"
 
 
 async def test_download_returns_same_bytes(docs_client: AsyncClient) -> None:

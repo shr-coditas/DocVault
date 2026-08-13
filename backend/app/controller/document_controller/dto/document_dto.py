@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.document import DocumentVisibility
+from app.models.document import DocumentSearchStatus, DocumentVisibility
 from app.models.document_grant import PrincipalType
 
 
@@ -27,6 +27,7 @@ class DocumentOut(BaseModel):
     size_bytes: int
     checksum_sha256: str
     visibility: DocumentVisibility
+    search_status: DocumentSearchStatus
     created_at: datetime
     deleted_at: datetime | None
 

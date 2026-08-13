@@ -27,6 +27,14 @@ class DocumentVisibility(StrEnum):
     WORKSPACE = "workspace"
 
 
+class DocumentSearchStatus(StrEnum):
+    """User-safe readiness state for document search and question answering."""
+
+    READY = "ready"
+    WAITING_FOR_INDEX = "waiting_for_index"
+    INDEXING_FAILED = "indexing_failed"
+
+
 class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """A stored file: metadata row in Postgres, bytes in object storage.
 
@@ -97,3 +105,17 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # A same-dimensional model swap is still incompatible. Retrieval composes
     # this profile equality with generation equality so profiles never mix.
     active_embedding_profile: Mapped[str | None] = mapped_column(sa.String(255))
+
+    @property
+    def search_status(self) -> DocumentSearchStatus:
+        """Expose readiness without leaking internal indexing diagnostics.
+
+        A dirty or failed reindex may leave ``indexed`` false while the previous
+        active generation remains intentionally searchable. The active profile
+        and generation are therefore the stronger readiness signal.
+        """
+        if self.indexed or (self.index_generation > 0 and self.active_embedding_profile):
+            return DocumentSearchStatus.READY
+        if self.index_error:
+            return DocumentSearchStatus.INDEXING_FAILED
+        return DocumentSearchStatus.WAITING_FOR_INDEX
