@@ -20,7 +20,7 @@ from app.repository.user_repository import UserRepository
 from app.repository.workspace_repository import WorkspaceRepository
 from app.services.audit_service import AuditService
 from app.services.permission_service import PermissionService
-from app.services.storage_service import StorageService
+from app.services.storage_service import StorageService, document_prefix_from_key
 from app.utils.rbac_catalog import OWNER
 
 
@@ -87,7 +87,7 @@ class WorkspaceService:
 
     async def delete(self, actor: User, workspace_id: uuid.UUID) -> None:
         workspace = await self.get(workspace_id)
-        # collect object keys BEFORE the rows cascade away — Postgres can't
+        # collect object keys BEFORE the rows cascade away - Postgres can't
         # cascade into MinIO, so we clean the objects up ourselves post-commit
         storage_keys = await self.documents.storage_keys_in_workspace(workspace_id)
         self.audit.record(
@@ -101,7 +101,7 @@ class WorkspaceService:
         await self.repository.delete(workspace)  # DB cascades documents/folders/teams
         await self.session.commit()
         for key in storage_keys:  # best-effort: a miss leaves a harmless orphan
-            await self.storage.delete(key)
+            await self.storage.delete_prefix(document_prefix_from_key(key))
 
     async def members(self, workspace_id: uuid.UUID) -> list[MemberOut]:
         return [
