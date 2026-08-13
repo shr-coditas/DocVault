@@ -1,4 +1,4 @@
-"""Sign-in / register — the only page visible while logged out."""
+"""Sign-in / register - the only page visible while logged out."""
 
 import streamlit as st
 
@@ -50,7 +50,7 @@ with tab_register:
         except api.ApiError as e:
             st.error(f"Registration failed: {e.detail}")
         else:
-            # straight in — making a brand-new user retype their credentials
+            # straight in - making a brand-new user retype their credentials
             # in another tab is a pointless first impression
             try:
                 _start_session(reg_email, reg_password)

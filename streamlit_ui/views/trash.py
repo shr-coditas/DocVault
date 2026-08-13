@@ -1,4 +1,4 @@
-"""Trash — restore documents or delete them permanently (with confirmation)."""
+"""Trash - restore documents or delete them permanently (with confirmation)."""
 
 from typing import Any
 
@@ -10,7 +10,7 @@ workspace_id = st.session_state["current_workspace_id"]
 
 st.subheader("Trash")
 
-# the whole page needs document:delete, which viewers don't have — say so
+# the whole page needs document:delete, which viewers don't have - say so
 # rather than letting every call below fail with a red error
 my_role = next(
     (

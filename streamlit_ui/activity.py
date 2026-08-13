@@ -108,7 +108,7 @@ def _render_event(
     name = extra.get("title") or extra.get("name") or extra.get("file_name") or ""
     line = f"`{(when or '')[11:19]}` **{action}** · {resource_type}"
     if name:
-        line += f" — {name}"
+        line += f" - {name}"
     st.markdown(line)
 
 
@@ -133,7 +133,7 @@ def _feed_body(workspace_id: str) -> None:
             st.rerun(scope="fragment")
 
     if not st.session_state["activity_events"]:
-        st.caption("No live events yet — actions by any member appear here instantly.")
+        st.caption("No live events yet - actions by any member appear here instantly.")
     for ev in st.session_state["activity_events"]:
         _render_event(
             ev.get("occurred_at", ""),

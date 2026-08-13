@@ -1,4 +1,4 @@
-"""Teams — create teams and manage their membership.
+"""Teams - create teams and manage their membership.
 
 A restricted document can be shared with a whole team as well as with named
 people, so this page is the other half of the Share dialog on the Documents page.
@@ -39,7 +39,7 @@ except api.ApiError as e:
 member_emails = {m["user_id"]: m["email"] for m in members}
 
 if not teams:
-    st.info("No teams yet — create one below to share documents with a group.")
+    st.info("No teams yet - create one below to share documents with a group.")
 
 for team in teams:
     with st.expander(f"👥 {team['name']}"):
@@ -53,7 +53,7 @@ for team in teams:
             st.caption("No members yet.")
         for tm in team_members:
             row, action = st.columns([4, 1], vertical_alignment="center")
-            row.write(f"{tm['email']} — {tm['full_name']}")
+            row.write(f"{tm['email']} - {tm['full_name']}")
             if can_manage and action.button(
                 "Remove", key=f"tm-rm-{team['id']}-{tm['user_id']}", width="stretch"
             ):

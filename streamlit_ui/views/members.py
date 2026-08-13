@@ -1,4 +1,4 @@
-"""Members — list workspace members, add by email."""
+"""Members - list workspace members, add by email."""
 
 import streamlit as st
 

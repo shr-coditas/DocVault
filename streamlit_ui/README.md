@@ -29,12 +29,12 @@ $env:API_URL = "http://localhost:8000/api/v1"; uv run --directory streamlit_ui s
 - **🔔 popover** in the header shows the live WebSocket activity feed on
   every page (owners can also load recent history from the audit log).
 - **Documents**: browse all documents or one folder, upload from the toolbar,
-  click a document to open its detail panel — inline preview for PDF, images,
+  click a document to open its detail panel - inline preview for PDF, images,
   markdown, CSV, JSON, and plain text; download for everything else.
   Rename/move opens a dialog; permanent delete (in Trash) requires an
   explicit confirmation.
 - **Share**: `Restricted` documents are opened up by grants naming either a
-  person or a team — both, on the same document, in any combination. Teams are
+  person or a team - both, on the same document, in any combination. Teams are
   resolved live, so adding someone to a team grants them everything already
   shared with it. `Everyone in the workspace` needs no grants.
 
@@ -43,7 +43,7 @@ $env:API_URL = "http://localhost:8000/api/v1"; uv run --directory streamlit_ui s
 A reload keeps you signed in. The browser holds an opaque id in the `dv_sid`
 cookie; the refresh token itself stays in the Streamlit process, keyed by that
 id (`session.py`). That store is an in-process dict, so restarting the
-container signs everyone out and it will not work across replicas — see
+container signs everyone out and it will not work across replicas - see
 `docs/decisions.md` for why it isn't the HttpOnly cookie you'd expect, and
 what production would use instead.
 

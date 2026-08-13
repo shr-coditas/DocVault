@@ -1,4 +1,4 @@
-"""Workspace picker — shown right after login (unless auto-entered)."""
+"""Workspace picker - shown right after login (unless auto-entered)."""
 
 from typing import Any
 
@@ -11,7 +11,7 @@ st.title("Choose a workspace")
 workspaces = st.session_state.get("workspaces") or []
 
 if not workspaces:
-    st.info("No workspaces yet — create your first one below.")
+    st.info("No workspaces yet - create your first one below.")
 
 
 @st.dialog("Delete workspace")

@@ -7,7 +7,7 @@ in the browser itself.
 
 The industry answer would be a backend-set ``HttpOnly; Secure; SameSite``
 cookie holding the refresh token: unreadable from JavaScript, so XSS cannot
-steal it. That is out of reach here — the browser never talks to the DocVault
+steal it. That is out of reach here - the browser never talks to the DocVault
 API, it talks to Streamlit, which calls the API server-side, and Streamlit can
 only *read* cookies natively (writing one needs a JS component, which by
 definition cannot set HttpOnly).
@@ -75,7 +75,7 @@ def remember(refresh_token: str) -> None:
 
     Called on login and after every rotation, so the stored token is never the
     stale half of a rotated pair. The id itself only changes at login, so the
-    browser is only written to then — and the write is queued rather than done
+    browser is only written to then - and the write is queued rather than done
     here, because callers usually st.rerun() straight afterwards and that would
     throw away the component render that carries it.
     """
@@ -92,7 +92,7 @@ def remember(refresh_token: str) -> None:
 def forget() -> None:
     """Drop the server-side entry and queue the cookie deletion.
 
-    Safe to call when already signed out, and from a widget callback — where
+    Safe to call when already signed out, and from a widget callback - where
     rendering the component directly would not be allowed.
     """
     sid = st.session_state.pop("_sid", None)

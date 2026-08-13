@@ -7,6 +7,9 @@ dependencies = [
     "extra-streamlit-components>=0.1.71",
     "httpx>=0.28.0",
     "pandas>=2.0.0",
-    "streamlit>=1.57.0",
+    # [pdf] pulls the streamlit-pdf component that st.pdf() needs; without the
+    # extra the call raises at render time rather than at import, so the whole
+    # documents page dies only when someone previews a PDF.
+    "streamlit[pdf]>=1.57.0",
     "websockets>=14.0",
 ]
