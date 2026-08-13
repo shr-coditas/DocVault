@@ -13,7 +13,7 @@ from jwt import PyJWTError
 from app.config import get_settings
 from app.dependencies import DbSession
 from app.repository.user_repository import UserRepository
-from app.services.activity_broadcaster import get_broadcaster
+from app.services.activity_broadcaster import get_activity_manager
 from app.services.permission_service import PermissionService
 from app.utils.security import decode_access_token
 
@@ -32,7 +32,7 @@ async def workspace_activity(
     """Push every committed workspace event to connected members.
 
     Browsers cannot set headers on WebSockets, so the access token arrives as
-    a query parameter (?token=...). Non-members are closed with 1008 — same
+    a query parameter (?token=...). Non-members are closed with 1008 - same
     information-hiding intent as the REST 404 rule.
     """
     await websocket.accept()
@@ -52,15 +52,15 @@ async def workspace_activity(
     if role is None:
         await websocket.close(code=POLICY_VIOLATION)
         return
-    await db.rollback()  # auth done — don't pin a DB connection for the socket's lifetime
+    await db.rollback()  # auth done - don't pin a DB connection for the socket's lifetime
 
-    broadcaster = get_broadcaster()
-    queue = broadcaster.subscribe(workspace_id)
+    manager = get_activity_manager()
+    manager.connect(workspace_id, websocket)
+
     try:
         while True:
-            event = await queue.get()
-            await websocket.send_json(event)
-    except (WebSocketDisconnect, RuntimeError):
-        pass  # client went away (RuntimeError = send on a closed socket)
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
     finally:
-        broadcaster.unsubscribe(workspace_id, queue)
+        manager.disconnect(workspace_id, websocket)

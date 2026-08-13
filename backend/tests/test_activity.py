@@ -1,8 +1,10 @@
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import WebSocket
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -14,56 +16,79 @@ from starlette.testclient import TestClient
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import create_app
-from app.scripts.seed_rbac import sync_rbac_catalog
-from app.services.activity_broadcaster import ActivityBroadcaster
+from app.services.activity_broadcaster import ActivityConnectionManager
+from tests.helpers import create_schema, sync_rbac_catalog
 
 
-class TestBroadcasterUnit:
-    def test_subscribe_publish_roundtrip(self) -> None:
-        broadcaster = ActivityBroadcaster()
-        ws_id = uuid.uuid4()
+class TestActivityManagerUnit:
+    def test_connect_adds_websocket(self) -> None:
+        manager = ActivityConnectionManager()
+        workspace_id = uuid.uuid4()
+        websocket = AsyncMock(spec=WebSocket)
 
-        async def scenario() -> dict:
-            queue = broadcaster.subscribe(ws_id)
-            broadcaster.publish(ws_id, {"action": "x"})
-            return await queue.get()
+        manager.connect(workspace_id, websocket)
 
-        assert asyncio.run(scenario()) == {"action": "x"}
+        assert websocket in manager.active_connections[workspace_id]
 
-    def test_publish_to_other_workspace_not_delivered(self) -> None:
-        broadcaster = ActivityBroadcaster()
-        mine, other = uuid.uuid4(), uuid.uuid4()
+    def test_disconnect_removes_websocket(self) -> None:
+        manager = ActivityConnectionManager()
+        workspace_id = uuid.uuid4()
+        websocket = AsyncMock(spec=WebSocket)
 
-        async def scenario() -> bool:
-            queue = broadcaster.subscribe(mine)
-            broadcaster.publish(other, {"action": "x"})
-            return queue.empty()
+        manager.connect(workspace_id, websocket)
+        manager.disconnect(workspace_id, websocket)
 
-        assert asyncio.run(scenario())
+        assert workspace_id not in manager.active_connections
 
-    def test_unsubscribe_stops_delivery(self) -> None:
-        broadcaster = ActivityBroadcaster()
-        ws_id = uuid.uuid4()
+    def test_broadcast_sends_to_workspace_connections(self) -> None:
+        manager = ActivityConnectionManager()
+        workspace_id = uuid.uuid4()
+        websocket = AsyncMock(spec=WebSocket)
 
-        async def scenario() -> bool:
-            queue = broadcaster.subscribe(ws_id)
-            broadcaster.unsubscribe(ws_id, queue)
-            broadcaster.publish(ws_id, {"action": "x"})
-            return queue.empty()
+        manager.connect(workspace_id, websocket)
 
-        assert asyncio.run(scenario())
+        asyncio.run(
+            manager.broadcast(
+                workspace_id,
+                {"action": "folder.created"},
+            )
+        )
 
-    def test_full_queue_drops_instead_of_blocking(self) -> None:
-        broadcaster = ActivityBroadcaster()
-        ws_id = uuid.uuid4()
+        websocket.send_json.assert_awaited_once_with({"action": "folder.created"})
 
-        async def scenario() -> int:
-            queue = broadcaster.subscribe(ws_id)
-            for i in range(150):  # maxsize is 100 — the rest must be dropped silently
-                broadcaster.publish(ws_id, {"n": i})
-            return queue.qsize()
+    def test_broadcast_does_not_send_to_other_workspace(self) -> None:
+        manager = ActivityConnectionManager()
+        workspace_id = uuid.uuid4()
+        other_workspace_id = uuid.uuid4()
+        websocket = AsyncMock(spec=WebSocket)
 
-        assert asyncio.run(scenario()) == 100
+        manager.connect(workspace_id, websocket)
+
+        asyncio.run(
+            manager.broadcast(
+                other_workspace_id,
+                {"action": "folder.created"},
+            )
+        )
+
+        websocket.send_json.assert_not_awaited()
+
+    def test_failed_connection_is_removed(self) -> None:
+        manager = ActivityConnectionManager()
+        workspace_id = uuid.uuid4()
+        websocket = AsyncMock(spec=WebSocket)
+        websocket.send_json.side_effect = RuntimeError("connection closed")
+
+        manager.connect(workspace_id, websocket)
+
+        asyncio.run(
+            manager.broadcast(
+                workspace_id,
+                {"action": "folder.created"},
+            )
+        )
+
+        assert workspace_id not in manager.active_connections
 
 
 @pytest.mark.integration
@@ -81,8 +106,7 @@ class TestActivityFeed:
             loop = asyncio.get_running_loop()
             if loop not in state:
                 engine = create_async_engine(postgres_url)
-                async with engine.begin() as conn:
-                    await conn.run_sync(Base.metadata.create_all)
+                await create_schema(engine)
                 factory = async_sessionmaker(engine, expire_on_commit=False)
                 async with factory() as session:
                     await sync_rbac_catalog(session)
