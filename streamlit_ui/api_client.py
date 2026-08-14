@@ -10,12 +10,12 @@ pointing at the live token rather than the revoked one.
 """
 
 import os
+from contextlib import suppress
 from typing import Any
 
 import httpx
-import streamlit as st
-
 import session
+import streamlit as st
 
 # In Docker the API is reachable at http://api:8000 (service name on the compose
 # network); running the UI locally it's http://localhost:8080. API_URL overrides.
@@ -73,9 +73,7 @@ def try_refresh() -> bool:
     return True
 
 
-def _request(
-    method: str, path: str, *, timeout: float = 10.0, **kwargs: Any
-) -> httpx.Response:
+def _request(method: str, path: str, *, timeout: float = 10.0, **kwargs: Any) -> httpx.Response:
     resp = httpx.request(
         method, f"{base_url()}{path}", headers=_headers(), timeout=timeout, **kwargs
     )
@@ -121,14 +119,12 @@ def login(email: str, password: str) -> dict[str, Any]:
 def logout(refresh_token: str) -> None:
     """Revoke the whole refresh-token family server-side. Best effort: signing
     out locally must succeed even if the API is unreachable."""
-    try:
+    with suppress(httpx.HTTPError):
         httpx.post(
             f"{base_url()}/auth/logout",
             json={"refresh_token": refresh_token},
             timeout=5.0,
         )
-    except httpx.HTTPError:
-        pass
 
 
 def me() -> dict[str, Any]:
@@ -143,9 +139,7 @@ def list_workspaces() -> list[dict[str, Any]]:
 
 
 def create_workspace(name: str, description: str = "") -> dict[str, Any]:
-    return _request(
-        "POST", "/workspaces", json={"name": name, "description": description}
-    ).json()
+    return _request("POST", "/workspaces", json={"name": name, "description": description}).json()
 
 
 def delete_workspace(workspace_id: str) -> None:
@@ -172,9 +166,7 @@ def list_teams(workspace_id: str) -> list[dict[str, Any]]:
 
 
 def create_team(workspace_id: str, name: str) -> dict[str, Any]:
-    return _request(
-        "POST", f"/workspaces/{workspace_id}/teams", json={"name": name}
-    ).json()
+    return _request("POST", f"/workspaces/{workspace_id}/teams", json={"name": name}).json()
 
 
 def delete_team(workspace_id: str, team_id: str) -> None:
@@ -204,9 +196,7 @@ def folder_tree(workspace_id: str) -> list[dict[str, Any]]:
     return _request("GET", f"/workspaces/{workspace_id}/folders/tree").json()
 
 
-def create_folder(
-    workspace_id: str, name: str, parent_id: str | None
-) -> dict[str, Any]:
+def create_folder(workspace_id: str, name: str, parent_id: str | None) -> dict[str, Any]:
     return _request(
         "POST",
         f"/workspaces/{workspace_id}/folders",
@@ -233,9 +223,7 @@ def upload_document(
     return _request(
         "POST",
         f"/workspaces/{workspace_id}/documents/upload",
-        files={
-            "file": (file_name, file_bytes, content_type or "application/octet-stream")
-        },
+        files={"file": (file_name, file_bytes, content_type or "application/octet-stream")},
         data=data,
         timeout=60,
     ).json()
@@ -249,9 +237,7 @@ def list_documents(
     params: dict[str, Any] = {"scope": "all"} if every_folder else {}
     if folder_id and not every_folder:
         params["folder_id"] = folder_id
-    return _request(
-        "GET", f"/workspaces/{workspace_id}/documents", params=params
-    ).json()
+    return _request("GET", f"/workspaces/{workspace_id}/documents", params=params).json()
 
 
 def download_document(workspace_id: str, document_id: str) -> bytes:
@@ -284,9 +270,7 @@ def trash_document(workspace_id: str, document_id: str) -> None:
 
 
 def restore_document(workspace_id: str, document_id: str) -> dict[str, Any]:
-    return _request(
-        "POST", f"/workspaces/{workspace_id}/documents/{document_id}/restore"
-    ).json()
+    return _request("POST", f"/workspaces/{workspace_id}/documents/{document_id}/restore").json()
 
 
 def list_trash(workspace_id: str) -> list[dict[str, Any]]:
@@ -339,17 +323,128 @@ def query_documents(
     except httpx.TimeoutException as exc:
         raise ApiError(504, "The answer took too long. Please try again.") from exc
     except httpx.HTTPError as exc:
-        raise ApiError(
-            503, "DocVault is temporarily unavailable. Please try again."
-        ) from exc
+        raise ApiError(503, "DocVault is temporarily unavailable. Please try again.") from exc
+
+
+# --- conversations ------------------------------------------------------
+
+
+def _conversation_request(
+    method: str, path: str, *, timeout: float = 15.0, **kwargs: Any
+) -> httpx.Response:
+    try:
+        return _request(method, path, timeout=timeout, **kwargs)
+    except httpx.TimeoutException as exc:
+        raise ApiError(504, "The conversation request timed out.") from exc
+    except httpx.HTTPError as exc:
+        raise ApiError(503, "DocVault is temporarily unavailable.") from exc
+
+
+def create_conversation(
+    workspace_id: str,
+    scope_mode: str,
+    document_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"scope_mode": scope_mode}
+    if document_ids:
+        body["document_ids"] = list(dict.fromkeys(document_ids))
+    return _conversation_request(
+        "POST",
+        f"/workspaces/{workspace_id}/conversations",
+        json=body,
+    ).json()
+
+
+def list_conversations(
+    workspace_id: str,
+    *,
+    limit: int = 20,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"limit": limit}
+    if cursor:
+        params["cursor"] = cursor
+    return _conversation_request(
+        "GET",
+        f"/workspaces/{workspace_id}/conversations",
+        params=params,
+    ).json()
+
+
+def get_conversation(workspace_id: str, conversation_id: str) -> dict[str, Any]:
+    return _conversation_request(
+        "GET",
+        f"/workspaces/{workspace_id}/conversations/{conversation_id}",
+    ).json()
+
+
+def delete_conversation(workspace_id: str, conversation_id: str) -> None:
+    _conversation_request(
+        "DELETE",
+        f"/workspaces/{workspace_id}/conversations/{conversation_id}",
+    )
+
+
+def list_conversation_messages(
+    workspace_id: str,
+    conversation_id: str,
+    *,
+    page_limit: int = 100,
+    max_pages: int = 10,
+) -> list[dict[str, Any]]:
+    """Load canonical messages in sequence order with a defensive page bound."""
+    messages: list[dict[str, Any]] = []
+    after_sequence = 0
+    for _ in range(max_pages):
+        page = _conversation_request(
+            "GET",
+            f"/workspaces/{workspace_id}/conversations/{conversation_id}/messages",
+            params={"after_sequence": after_sequence, "limit": page_limit},
+        ).json()
+        items = page.get("items") or []
+        messages.extend(items)
+        next_sequence = page.get("next_after_sequence")
+        if next_sequence is None or not items:
+            break
+        after_sequence = int(next_sequence)
+    return messages
+
+
+def submit_conversation_message(
+    workspace_id: str,
+    conversation_id: str,
+    content: str,
+    client_message_id: str,
+) -> dict[str, Any]:
+    """Submit or resume one idempotent turn.
+
+    A timeout is deliberately surfaced without changing the client message ID;
+    the caller can safely retry the same logical submission.
+    """
+    return _conversation_request(
+        "POST",
+        f"/workspaces/{workspace_id}/conversations/{conversation_id}/messages",
+        json={"content": content, "client_message_id": client_message_id},
+        timeout=90.0,
+    ).json()
+
+
+def get_conversation_turn(
+    workspace_id: str,
+    conversation_id: str,
+    turn_id: str,
+) -> dict[str, Any]:
+    return _conversation_request(
+        "GET",
+        f"/workspaces/{workspace_id}/conversations/{conversation_id}/turns/{turn_id}",
+        timeout=15.0,
+    ).json()
 
 
 # --- sharing ------------------------------------------------------------
 
 
-def set_visibility(
-    workspace_id: str, document_id: str, visibility: str
-) -> dict[str, Any]:
+def set_visibility(workspace_id: str, document_id: str, visibility: str) -> dict[str, Any]:
     return _request(
         "PUT",
         f"/workspaces/{workspace_id}/documents/{document_id}/visibility",
@@ -358,9 +453,7 @@ def set_visibility(
 
 
 def list_grants(workspace_id: str, document_id: str) -> list[dict[str, Any]]:
-    return _request(
-        "GET", f"/workspaces/{workspace_id}/documents/{document_id}/grants"
-    ).json()
+    return _request("GET", f"/workspaces/{workspace_id}/documents/{document_id}/grants").json()
 
 
 def add_grant(
@@ -387,6 +480,4 @@ def remove_grant(
 
 
 def get_audit_log(workspace_id: str, limit: int = 20) -> list[dict[str, Any]]:
-    return _request(
-        "GET", f"/workspaces/{workspace_id}/audit", params={"limit": limit}
-    ).json()
+    return _request("GET", f"/workspaces/{workspace_id}/audit", params={"limit": limit}).json()
