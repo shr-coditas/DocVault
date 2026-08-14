@@ -592,3 +592,111 @@ Short notes on non-obvious choices. Newest at the bottom.
   so an unqualified `min_score` is ambiguous; the remaining name states that the
   floor applies only to the dense candidate branch. Obsolete inputs are rejected
   instead of being silently ignored.
+
+## 2026-08-13 - persistent conversations before an agentic query graph
+
+- **Product conversation history lands before LangGraph.** Persistent turns,
+  ownership, scope, provenance and contextual follow-ups are useful without an
+  agent loop and give a later graph trusted state to run over. LangGraph
+  checkpoints will be internal execution state, never the canonical user-visible
+  record.
+- **Conversations are private to their creator and hard-deleted on request.** A
+  workspace role grants the capability to use document chat, not the right to
+  inspect another member's questions. Cross-workspace and cross-creator lookups
+  return 404. Conversation-owned rows cascade from the conversation; historical
+  document and chunk references do not cascade from document tables.
+- **Conversation scope is immutable.** Workspace scope means all documents the
+  creator can access at each turn. A selected scope preserves its original set of
+  one to ten document identities and frozen names. Changing scope starts another
+  conversation instead of changing what earlier turns meant.
+- **Selected scope degrades explicitly when access changes.** Each turn computes
+  the accessible intersection of the original selection. An empty intersection
+  refuses without retrieval; a non-empty subset may answer only from that subset
+  and must prominently report the missing documents. It never silently rewrites
+  the stored selection and never replaces the retrieval ACL.
+- **Historical answers are authorized at read time.** Every retrieved source is
+  recorded, including the subset supplied to generation. If access to any source
+  that could have influenced generated prose is lost, the assistant answer is
+  projected as redacted while the user's question remains. Re-granting access
+  restores it because redaction is computed rather than destructive. One batched
+  repository query composes the existing SQL accessibility predicate for a page;
+  there is no per-source Python authorization copy.
+- **Source provenance survives reindexing and deletion.** A source records the
+  original chunk id plus `document_id`, `index_generation`, and `logical_key`,
+  together with frozen display metadata. The original chunk is preferred; a
+  current-generation logical-key match is only a relocated navigation target,
+  not a claim that the historical answer used the new chunk.
+- **Turn durability uses an idempotency key and the existing lease idiom.** A
+  user and assistant placeholder share a stable turn id. The pending assistant
+  carries a unique lease token and expiry; takeover replaces the token, and
+  finalization is fenced on the token so a superseded execution cannot overwrite
+  the winner. User input commits before retrieval or model calls, while sources
+  and the final assistant state commit atomically afterward.
+- **History helps interpretation, never factual grounding.** Guardrails and
+  intent classification inspect the current raw message before any history is
+  loaded. A separate contextual-query resolver may turn a safe follow-up into a
+  standalone query using bounded, access-safe complete turns. Generation still
+  receives only fresh permission-filtered sources; prior assistant prose is not
+  evidence.
+- **The conversation API becomes the canonical chat surface.** The stateless
+  `/query` endpoint stays temporarily as a migration bridge while the new API and
+  Streamlit client reach parity. It can then be removed unless non-persistent
+  questioning becomes an explicit product requirement; the internal
+  `QueryService` remains independent of that HTTP decision.
+- **Conversation observability excludes content.** Audit events are limited to
+  conversation creation and deletion. Structured logs contain identifiers,
+  enumerated reason codes, counts, timings, model names and token usage, never
+  raw messages, standalone rewrites, titles, retrieved text or prompts.
+
+## 2026-08-14 - structured follow-up resolution and canonical persistent UI
+
+- **Context resolution uses provider-native structured output.** The resolver
+  owns a small validated schema and a separate model client; answer generation
+  call accounting remains unchanged. Invalid output, provider errors, and the
+  bounded timeout all degrade to the raw safe query rather than failing a turn.
+- **Streamlit stores identifiers, not canonical chat content.** Conversations
+  and messages reload from the API on each full page run. Session state carries
+  only the active conversation and an uncertain submission's idempotency key.
+  A two-second fragment polls a pending bubble and performs a full rerun only
+  when the terminal server state is available.
+- **Resolver quality is measured separately from retrieval and generation.** A
+  checked-in synthetic corpus covers reference rewriting, topic shifts,
+  ambiguity, raw-query security gates, and access-filtered history. Metrics
+  report strict labeled exactness only where a query will actually be searched,
+  ambiguity recall, unnecessary clarifications, resolver routing, provider
+  failures, scope-widening terms, and latency. Provider failures are never hidden
+  inside an aggregate quality score.
+
+## 2026-08-14 (later) - one bounded query graph, with product history outside it
+
+- **LangGraph orchestrates one query turn; it is not the authorization or
+  conversation system.** Deterministic input gates remain before history and
+  retrieval, and every retrieval/rewrite/decomposition branch calls the existing
+  permission-filtered `SearchService` with actor, workspace and immutable scope
+  supplied through trusted runtime context. The model never chooses those values.
+- **Product conversations and graph checkpoints have different identities.** The
+  database conversation/message/source ledger remains canonical. A checkpoint
+  thread is keyed by durable `turn_id`, not `conversation_id`, so it can resume a
+  leased turn without becoming a second multi-turn memory or silently carrying
+  scope between questions. Completed, deleted and expired turns clean up their
+  checkpoint threads.
+- **The first graph is a parity migration, not an agent loop.** Existing linear
+  `QueryService` behavior is expressed as nodes and conditional edges and tested
+  beside the old path before corrective retrieval, decomposition or generation
+  retries are enabled. The service stays the facade for both stateless `/query`
+  and canonical persistent conversations.
+- **Parallel retrieval requires independent database sessions.** SQLAlchemy's
+  request-scoped `AsyncSession` cannot service concurrent branch queries. LCEL
+  fan-out is permitted only through a factory that gives each branch its own
+  bounded read session; otherwise the bounded subqueries run sequentially.
+- **Output is validated before it is delivered.** Security/citation/grounding
+  checks may regenerate once, but a rejected draft is neither persisted nor sent
+  over SSE. The first event stream therefore carries sanitized progress and the
+  validated terminal answer; low-latency token streaming waits for an explicit
+  incremental-safety design rather than exposing bytes a later guardrail cannot
+  retract.
+- **The Postgres saver owns its internal schema lifecycle.** Its pinned package
+  migrations run via an explicit autocommit setup/deployment command, never at API
+  startup or inside an Alembic transaction. Checkpoint connections are separate
+  from application asyncpg sessions, and checkpoint state stores bounded control
+  data/source references rather than credentials, prompts or raw document text.
