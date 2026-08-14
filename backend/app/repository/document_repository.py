@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import ColumnElement, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,6 +82,32 @@ class DocumentRepository:
             select(Document)
             .where(Document.workspace_id == workspace_id, Document.deleted_at.is_not(None))
             .order_by(Document.deleted_at.desc())
+        )
+        if access is not None:
+            stmt = stmt.where(self._accessible_condition(*access))
+        return list((await self.session.execute(stmt)).scalars())
+
+    async def accessible_active_by_ids(
+        self,
+        workspace_id: uuid.UUID,
+        document_ids: Sequence[uuid.UUID],
+        *,
+        access: tuple[uuid.UUID, list[uuid.UUID]] | None,
+    ) -> list[Document]:
+        """One batched ACL projection for scope validation and history reads.
+
+        The caller compares the returned ids with its candidate set. Keeping the
+        workspace, deletion and visibility predicates in this repository avoids
+        per-document service checks and, more importantly, another copy of the
+        restricted-document rule.
+        """
+        candidates = list(dict.fromkeys(document_ids))
+        if not candidates:
+            return []
+        stmt = select(Document).where(
+            Document.workspace_id == workspace_id,
+            Document.id.in_(candidates),
+            Document.deleted_at.is_(None),
         )
         if access is not None:
             stmt = stmt.where(self._accessible_condition(*access))

@@ -1,0 +1,574 @@
+"""Persistence invariants for creator-owned conversation history."""
+
+import uuid
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from uuid6 import uuid7
+
+from app.db.base import Base
+from app.models.conversation import (
+    Conversation,
+    ConversationDocument,
+    ConversationMessage,
+    ConversationScope,
+    MessageKind,
+    MessageRole,
+    MessageSource,
+    MessageStatus,
+)
+from app.models.document import Document, DocumentVisibility
+from app.models.document_chunk import DocumentChunk
+from app.models.document_index import DocumentIndexRun, DocumentStructureNode, IndexRunStatus
+from app.models.user import User
+from app.models.workspace import Workspace
+from app.repository.conversation_repository import ConversationRepository
+from app.repository.document_repository import DocumentRepository
+from tests.helpers import create_schema
+
+pytestmark = pytest.mark.integration
+
+
+@dataclass(frozen=True, slots=True)
+class Seeded:
+    owner: User
+    other_user: User
+    workspace: Workspace
+    other_workspace: Workspace
+    visible: Document
+    restricted: Document
+    trashed: Document
+    other_workspace_document: Document
+
+
+@pytest.fixture
+async def session(postgres_url: str) -> AsyncIterator[AsyncSession]:
+    engine = create_async_engine(postgres_url)
+    await create_schema(engine)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as db:
+        yield db
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+def _user(email: str) -> User:
+    return User(
+        id=uuid7(),
+        email=email,
+        hashed_password="not-used",
+        full_name=email.split("@", maxsplit=1)[0],
+    )
+
+
+def _document(
+    *,
+    workspace_id: uuid.UUID,
+    owner_id: uuid.UUID,
+    marker: str,
+    visibility: DocumentVisibility = DocumentVisibility.WORKSPACE,
+    deleted_at: datetime | None = None,
+    generation: int = 0,
+) -> Document:
+    return Document(
+        id=uuid7(),
+        workspace_id=workspace_id,
+        folder_id=None,
+        owner_id=owner_id,
+        title=f"{marker} title",
+        file_name=f"{marker}.txt",
+        mime_type="text/plain",
+        size_bytes=10,
+        checksum_sha256=marker.ljust(64, "0")[:64],
+        storage_key=f"tests/{uuid7()}/{marker}.txt",
+        visibility=visibility,
+        deleted_at=deleted_at,
+        indexed=generation > 0,
+        index_generation=generation,
+        active_embedding_profile="test-profile" if generation > 0 else None,
+    )
+
+
+async def _seed(session: AsyncSession) -> Seeded:
+    owner = _user("owner@example.com")
+    other_user = _user("other@example.com")
+    session.add_all([owner, other_user])
+    await session.flush()
+
+    workspace = Workspace(id=uuid7(), name="Primary", description="", created_by=owner.id)
+    other_workspace = Workspace(id=uuid7(), name="Other", description="", created_by=other_user.id)
+    session.add_all([workspace, other_workspace])
+    await session.flush()
+
+    visible = _document(
+        workspace_id=workspace.id,
+        owner_id=owner.id,
+        marker="visible",
+    )
+    restricted = _document(
+        workspace_id=workspace.id,
+        owner_id=owner.id,
+        marker="restricted",
+        visibility=DocumentVisibility.RESTRICTED,
+    )
+    trashed = _document(
+        workspace_id=workspace.id,
+        owner_id=owner.id,
+        marker="trashed",
+        deleted_at=datetime.now(UTC),
+    )
+    other_workspace_document = _document(
+        workspace_id=other_workspace.id,
+        owner_id=other_user.id,
+        marker="other-workspace",
+    )
+    session.add_all([visible, restricted, trashed, other_workspace_document])
+    await session.commit()
+    return Seeded(
+        owner=owner,
+        other_user=other_user,
+        workspace=workspace,
+        other_workspace=other_workspace,
+        visible=visible,
+        restricted=restricted,
+        trashed=trashed,
+        other_workspace_document=other_workspace_document,
+    )
+
+
+def _conversation(
+    seeded: Seeded,
+    *,
+    creator: User | None = None,
+    workspace: Workspace | None = None,
+    title: str = "Conversation",
+    updated_at: datetime | None = None,
+) -> Conversation:
+    return Conversation(
+        id=uuid7(),
+        workspace_id=(workspace or seeded.workspace).id,
+        created_by=(creator or seeded.owner).id,
+        title=title,
+        scope_mode=ConversationScope.SELECTED,
+        updated_at=updated_at or datetime.now(UTC),
+    )
+
+
+def _complete_turn(
+    conversation_id: uuid.UUID,
+) -> tuple[ConversationMessage, ConversationMessage]:
+    turn_id = uuid7()
+    user = ConversationMessage(
+        id=uuid7(),
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        sequence=1,
+        role=MessageRole.USER,
+        status=MessageStatus.COMPLETE,
+        kind=None,
+        content="What does the document say?",
+        client_message_id=uuid7(),
+    )
+    assistant = ConversationMessage(
+        id=uuid7(),
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        sequence=2,
+        role=MessageRole.ASSISTANT,
+        status=MessageStatus.COMPLETE,
+        kind=MessageKind.ANSWER,
+        content="A grounded answer [1].",
+        client_message_id=None,
+    )
+    return user, assistant
+
+
+async def test_batched_access_filters_workspace_deletion_and_visibility(
+    session: AsyncSession,
+) -> None:
+    seeded = await _seed(session)
+    candidates = [
+        seeded.visible.id,
+        seeded.restricted.id,
+        seeded.trashed.id,
+        seeded.other_workspace_document.id,
+        uuid7(),
+        seeded.visible.id,
+    ]
+    repository = DocumentRepository(session)
+
+    viewer_rows = await repository.accessible_active_by_ids(
+        seeded.workspace.id,
+        candidates,
+        access=(seeded.other_user.id, []),
+    )
+    assert {document.id for document in viewer_rows} == {seeded.visible.id}
+
+    owner_rows = await repository.accessible_active_by_ids(
+        seeded.workspace.id,
+        candidates,
+        access=None,
+    )
+    assert {document.id for document in owner_rows} == {
+        seeded.visible.id,
+        seeded.restricted.id,
+    }
+
+
+async def test_repository_hides_other_creators_and_workspaces_and_pages_by_cursor(
+    session: AsyncSession,
+) -> None:
+    seeded = await _seed(session)
+    now = datetime.now(UTC)
+    newest = _conversation(seeded, title="Newest", updated_at=now)
+    older = _conversation(seeded, title="Older", updated_at=now - timedelta(minutes=1))
+    other_creator = _conversation(seeded, creator=seeded.other_user, title="Private")
+    other_workspace = _conversation(
+        seeded,
+        workspace=seeded.other_workspace,
+        creator=seeded.other_user,
+        title="Elsewhere",
+    )
+    repository = ConversationRepository(session)
+    for conversation in (newest, older, other_creator, other_workspace):
+        repository.add(conversation)
+    await session.commit()
+
+    page = await repository.list_owned(
+        workspace_id=seeded.workspace.id,
+        creator_id=seeded.owner.id,
+        limit=1,
+    )
+    assert [conversation.id for conversation in page] == [newest.id]
+
+    next_page = await repository.list_owned(
+        workspace_id=seeded.workspace.id,
+        creator_id=seeded.owner.id,
+        limit=10,
+        before=(newest.updated_at, newest.id),
+    )
+    assert [conversation.id for conversation in next_page] == [older.id]
+    assert (
+        await repository.get_owned(
+            newest.id,
+            workspace_id=seeded.workspace.id,
+            creator_id=seeded.other_user.id,
+        )
+        is None
+    )
+    assert (
+        await repository.get_owned(
+            newest.id,
+            workspace_id=seeded.other_workspace.id,
+            creator_id=seeded.owner.id,
+        )
+        is None
+    )
+
+
+async def test_conversation_cascades_but_document_history_does_not(
+    session: AsyncSession,
+) -> None:
+    seeded = await _seed(session)
+    conversation = _conversation(seeded)
+    repository = ConversationRepository(session)
+    repository.add(conversation)
+    repository.add_documents(
+        [
+            ConversationDocument(
+                conversation_id=conversation.id,
+                document_id=seeded.visible.id,
+                position=0,
+                title_snapshot=seeded.visible.title,
+                file_name_snapshot=seeded.visible.file_name,
+            )
+        ]
+    )
+    user, assistant = _complete_turn(conversation.id)
+    repository.add_messages([user, assistant])
+    source = MessageSource(
+        id=uuid7(),
+        message_id=assistant.id,
+        document_id=seeded.visible.id,
+        chunk_id=uuid7(),
+        index_generation=1,
+        logical_key="section:0/chunk:0",
+        document_title_snapshot=seeded.visible.title,
+        heading=None,
+        breadcrumb=None,
+        page_numbers=[],
+        source_spans=[],
+        retrieval_rank=1,
+        supplied_to_model=True,
+        citation_marker=1,
+    )
+    repository.add_sources([source])
+    await session.commit()
+
+    await session.delete(seeded.visible)
+    await session.commit()
+    assert await session.get(ConversationDocument, (conversation.id, seeded.visible.id))
+    assert await session.get(MessageSource, source.id)
+
+    await repository.delete(conversation)
+    await session.commit()
+    conversation_documents = await session.scalar(
+        select(func.count())
+        .select_from(ConversationDocument)
+        .where(ConversationDocument.conversation_id == conversation.id)
+    )
+    messages = await session.scalar(
+        select(func.count())
+        .select_from(ConversationMessage)
+        .where(ConversationMessage.conversation_id == conversation.id)
+    )
+    sources = await session.scalar(
+        select(func.count()).select_from(MessageSource).where(MessageSource.id == source.id)
+    )
+    assert conversation_documents == 0
+    assert messages == 0
+    assert sources == 0
+
+
+async def test_pending_assistant_requires_a_lease_and_only_one_may_exist(
+    session: AsyncSession,
+) -> None:
+    seeded = await _seed(session)
+    conversation = _conversation(seeded)
+    session.add(conversation)
+    await session.commit()
+    conversation_id = conversation.id
+
+    invalid = ConversationMessage(
+        id=uuid7(),
+        conversation_id=conversation_id,
+        turn_id=uuid7(),
+        sequence=1,
+        role=MessageRole.ASSISTANT,
+        status=MessageStatus.PENDING,
+        kind=None,
+        content=None,
+        client_message_id=None,
+    )
+    session.add(invalid)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+    first = ConversationMessage(
+        id=uuid7(),
+        conversation_id=conversation_id,
+        turn_id=uuid7(),
+        sequence=1,
+        role=MessageRole.ASSISTANT,
+        status=MessageStatus.PENDING,
+        kind=None,
+        content=None,
+        client_message_id=None,
+        lease_token=uuid7(),
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=2),
+    )
+    second = ConversationMessage(
+        id=uuid7(),
+        conversation_id=conversation_id,
+        turn_id=uuid7(),
+        sequence=2,
+        role=MessageRole.ASSISTANT,
+        status=MessageStatus.PENDING,
+        kind=None,
+        content=None,
+        client_message_id=None,
+        lease_token=uuid7(),
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=2),
+    )
+    session.add(first)
+    await session.commit()
+    session.add(second)
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+async def test_citation_requires_a_source_supplied_to_the_model(
+    session: AsyncSession,
+) -> None:
+    seeded = await _seed(session)
+    conversation = _conversation(seeded)
+    session.add(conversation)
+    _, assistant = _complete_turn(conversation.id)
+    session.add(assistant)
+    session.add(
+        MessageSource(
+            id=uuid7(),
+            message_id=assistant.id,
+            document_id=seeded.visible.id,
+            chunk_id=uuid7(),
+            index_generation=1,
+            logical_key="document/chunk:0",
+            document_title_snapshot=seeded.visible.title,
+            heading=None,
+            breadcrumb=None,
+            page_numbers=[],
+            source_spans=[],
+            retrieval_rank=1,
+            supplied_to_model=False,
+            citation_marker=1,
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        await session.commit()
+    await session.rollback()
+
+
+def _index_run(document: Document, generation: int) -> DocumentIndexRun:
+    return DocumentIndexRun(
+        id=uuid7(),
+        workspace_id=document.workspace_id,
+        document_id=document.id,
+        target_generation=generation,
+        source_checksum=document.checksum_sha256,
+        extractor_profile="test-extractor",
+        normalizer_profile="test-normalizer",
+        chunker_profile="test-chunker",
+        embedding_profile="test-profile",
+        status=IndexRunStatus.ACTIVE,
+        lease_token=uuid7(),
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        quality_metrics={},
+    )
+
+
+def _node(run: DocumentIndexRun, generation: int) -> DocumentStructureNode:
+    return DocumentStructureNode(
+        id=uuid7(),
+        run_id=run.id,
+        workspace_id=run.workspace_id,
+        document_id=run.document_id,
+        index_generation=generation,
+        parent_id=None,
+        logical_path="document",
+        ordinal=0,
+        node_type="document",
+        heading_level=None,
+        text=None,
+        source_spans=[],
+        attributes={},
+        confidence=1.0,
+        content_hash=str(generation).ljust(64, "0"),
+    )
+
+
+def _chunk(
+    run: DocumentIndexRun,
+    node: DocumentStructureNode,
+    generation: int,
+) -> DocumentChunk:
+    return DocumentChunk(
+        id=uuid7(),
+        run_id=run.id,
+        document_id=run.document_id,
+        workspace_id=run.workspace_id,
+        index_generation=generation,
+        logical_key="document/chunk:0",
+        chunk_index=0,
+        structural_node_id=node.id,
+        parent_node_id=None,
+        ordinal_in_parent=0,
+        chunk_type="paragraph_chunk",
+        heading_path=[],
+        breadcrumb=None,
+        content=f"generation {generation}",
+        embedding_text=f"generation {generation}",
+        lexical_text=f"generation {generation}",
+        embedding_token_count=2,
+        page_start=None,
+        page_end=None,
+        source_spans=[],
+        language="en",
+        content_hash=str(generation).ljust(64, "0"),
+        chunk_metadata={},
+        embedding_profile_id="test-profile",
+        embedding_model="test-model",
+        embedding=[0.0] * 384,
+    )
+
+
+async def test_source_resolution_falls_back_to_logical_key_after_reindex(
+    session: AsyncSession,
+) -> None:
+    seeded = await _seed(session)
+    document = _document(
+        workspace_id=seeded.workspace.id,
+        owner_id=seeded.owner.id,
+        marker="versioned",
+        generation=2,
+    )
+    session.add(document)
+    await session.flush()
+    old_run = _index_run(document, 1)
+    current_run = _index_run(document, 2)
+    session.add_all([old_run, current_run])
+    await session.flush()
+    old_node = _node(old_run, 1)
+    current_node = _node(current_run, 2)
+    session.add_all([old_node, current_node])
+    await session.flush()
+    old_chunk = _chunk(old_run, old_node, 1)
+    current_chunk = _chunk(current_run, current_node, 2)
+    session.add_all([old_chunk, current_chunk])
+
+    conversation = _conversation(seeded)
+    session.add(conversation)
+    user, assistant = _complete_turn(conversation.id)
+    session.add_all([user, assistant])
+    source = MessageSource(
+        id=uuid7(),
+        message_id=assistant.id,
+        document_id=document.id,
+        chunk_id=old_chunk.id,
+        index_generation=1,
+        logical_key=old_chunk.logical_key,
+        document_title_snapshot=document.title,
+        heading=None,
+        breadcrumb=None,
+        page_numbers=[],
+        source_spans=[],
+        retrieval_rank=1,
+        supplied_to_model=True,
+        citation_marker=1,
+    )
+    session.add(source)
+    await session.commit()
+
+    repository = ConversationRepository(session)
+    exact = await repository.resolve_source_chunks([source.id], workspace_id=seeded.workspace.id)
+    assert exact[source.id].chunk is not None
+    assert exact[source.id].chunk.id == old_chunk.id
+    assert exact[source.id].relocated is False
+
+    await session.delete(old_run)
+    await session.commit()
+    relocated = await repository.resolve_source_chunks(
+        [source.id], workspace_id=seeded.workspace.id
+    )
+    assert relocated[source.id].chunk is not None
+    assert relocated[source.id].chunk.id == current_chunk.id
+    assert relocated[source.id].relocated is True
+
+    await session.delete(document)
+    await session.commit()
+    unresolved = await repository.resolve_source_chunks(
+        [source.id], workspace_id=seeded.workspace.id
+    )
+    assert unresolved[source.id].chunk is None
+    assert unresolved[source.id].relocated is False
+    assert (
+        await session.execute(select(func.count()).select_from(MessageSource))
+    ).scalar_one() == 1
