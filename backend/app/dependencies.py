@@ -14,6 +14,10 @@ from app.db.session import get_db
 from app.exceptions import UnauthorizedError
 from app.models.user import User
 from app.repository.user_repository import UserRepository
+from app.services.contextual_query_service import (
+    ContextualQueryResolver,
+    get_default_contextual_resolver,
+)
 from app.services.embedding_service import Embedder, get_default_embedder
 from app.services.llm_service import ChatModel, get_default_chat_model
 from app.services.permission_service import PermissionService
@@ -61,6 +65,14 @@ def get_chat_model() -> ChatModel:
 
 
 ChatModelDep = Annotated[ChatModel, Depends(get_chat_model)]
+
+
+def get_contextual_resolver() -> ContextualQueryResolver:
+    """Independent follow-up resolver seam; tests override it separately."""
+    return get_default_contextual_resolver()
+
+
+ContextualResolverDep = Annotated[ContextualQueryResolver, Depends(get_contextual_resolver)]
 
 _bearer = HTTPBearer(
     auto_error=False

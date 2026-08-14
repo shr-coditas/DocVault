@@ -9,6 +9,12 @@ import math
 import zlib
 from collections.abc import Sequence
 
+from app.services.ai_types import (
+    ContextReason,
+    ContextResolution,
+    ConversationTurn,
+)
+from app.services.contextual_query_service import ResolverUnavailableError
 from app.services.llm_service import Completion, LLMUnavailableError
 from app.services.reranking_service import IdentityReranker
 
@@ -142,3 +148,46 @@ class UnavailableChatModel:
     async def complete(self, system: str, user: str) -> Completion:
         self.calls += 1
         raise LLMUnavailableError(self.message)
+
+
+class FakeContextualResolver:
+    """Scripted follow-up resolver with call history independent of generation."""
+
+    def __init__(
+        self,
+        *,
+        standalone_query: str | None = None,
+        needs_clarification: bool = False,
+        reason_code: ContextReason = ContextReason.REWRITTEN,
+    ) -> None:
+        self.standalone_query = standalone_query
+        self.needs_clarification = needs_clarification
+        self.reason_code = reason_code
+        self.calls: list[tuple[str, tuple[ConversationTurn, ...]]] = []
+
+    async def resolve(
+        self,
+        current_message: str,
+        history: Sequence[ConversationTurn],
+    ) -> ContextResolution:
+        frozen_history = tuple(history)
+        self.calls.append((current_message, frozen_history))
+        return ContextResolution(
+            standalone_query=self.standalone_query or current_message,
+            used_history=bool(history),
+            needs_clarification=self.needs_clarification,
+            reason_code=self.reason_code,
+        )
+
+
+class UnavailableContextualResolver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def resolve(
+        self,
+        current_message: str,
+        history: Sequence[ConversationTurn],
+    ) -> ContextResolution:
+        self.calls += 1
+        raise ResolverUnavailableError("resolver unavailable")

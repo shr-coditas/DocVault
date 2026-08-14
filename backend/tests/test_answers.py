@@ -105,7 +105,11 @@ async def test_no_hits_means_no_model_call() -> None:
     model = FakeChatModel()
     service = AnswerService(model)
 
-    assert await service.answer("anything?", []) is None
+    attempt = await service.answer("anything?", [])
+
+    assert attempt.answer is None
+    assert attempt.selected_sources == ()
+    assert attempt.failure == "no_sources"
     assert model.calls == 0
 
 
@@ -155,17 +159,23 @@ async def test_a_provider_failure_returns_none_rather_than_raising() -> None:
     model = UnavailableChatModel()
     service = AnswerService(model)
 
-    assert await service.answer("what is the policy?", [hit("a")]) is None
+    attempt = await service.answer("what is the policy?", [hit("a")])
+
+    assert attempt.answer is None
+    assert len(attempt.selected_sources) == 1
+    assert attempt.failure == "provider_unavailable"
     assert model.calls == 1
 
 
 async def test_a_successful_answer_carries_the_model_and_its_token_counts() -> None:
     service = AnswerService(FakeChatModel(reply="Grounded [1]."))
 
-    answer = await service.answer("what is the policy?", [hit("a")])
+    attempt = await service.answer("what is the policy?", [hit("a")])
+    answer = attempt.answer
 
     assert answer is not None
     assert answer.text == "Grounded [1]."
     assert answer.model == "fake-chat"
     assert (answer.input_tokens, answer.output_tokens) == (11, 7)
     assert [citation.marker for citation in answer.citations] == [1]
+    assert [source.document_title for source in attempt.selected_sources] == ["a.txt"]

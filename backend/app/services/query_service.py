@@ -28,21 +28,29 @@ intent gate decides *whether* to search, never *what may be seen*.
 """
 
 import uuid
+from collections.abc import Awaitable, Callable
 
 import structlog
 
 from app.ai import prompts
 from app.models.user import User
 from app.services.ai_types import (
+    ContextReason,
+    ContextResolution,
     GeneratedAnswer,
     GuardrailOutcome,
     QueryDecision,
+    QueryExecutionContext,
     QueryIntent,
     QueryOutcome,
     SearchHit,
     SearchMode,
 )
 from app.services.answer_service import AnswerService
+from app.services.contextual_query_service import (
+    ContextualQueryResolver,
+    ResolverUnavailableError,
+)
 from app.services.guardrail_service import GuardrailService
 from app.services.intent_service import IntentClassifier, RuleBasedIntentClassifier
 from app.services.search_service import SearchService
@@ -60,6 +68,15 @@ BLOCK_MESSAGE = "That request was refused."
 CHITCHAT_MESSAGE = (
     "Hello. Ask a question about the documents in this workspace and I will look them up."
 )
+CLARIFICATION_MESSAGE = (
+    "I need a little more detail to know which document, topic, or earlier answer you mean."
+)
+SCOPE_UNAVAILABLE_MESSAGE = (
+    "That question cannot be answered because the required conversation documents "
+    "are no longer available to you."
+)
+
+QueryContextLoader = Callable[[], Awaitable[QueryExecutionContext]]
 
 # Which intents justify spending a retrieval. A one-line policy table beats the
 # same knowledge spread across an if/elif chain, and it is the thing to read when
@@ -78,6 +95,8 @@ _MESSAGES: dict[QueryDecision, str | None] = {
     QueryDecision.ANSWER_DIRECTLY: CHITCHAT_MESSAGE,
     QueryDecision.DECLINE: DECLINE_MESSAGE,
     QueryDecision.BLOCK: BLOCK_MESSAGE,
+    QueryDecision.CLARIFY: CLARIFICATION_MESSAGE,
+    QueryDecision.SCOPE_UNAVAILABLE: SCOPE_UNAVAILABLE_MESSAGE,
 }
 
 
@@ -88,6 +107,7 @@ class QueryService:
         guardrails: GuardrailService | None = None,
         classifier: IntentClassifier | None = None,
         answers: AnswerService | None = None,
+        resolver: ContextualQueryResolver | None = None,
     ) -> None:
         self.search = search
         self.guardrails = guardrails or GuardrailService()
@@ -97,6 +117,7 @@ class QueryService:
         # shape a deployment with no API key runs in, and it is a degradation
         # rather than an outage.
         self.answers = answers
+        self.resolver = resolver
 
     async def handle(
         self,
@@ -109,6 +130,7 @@ class QueryService:
         mode: SearchMode = SearchMode.HYBRID,
         document_id: uuid.UUID | None = None,
         document_ids: list[uuid.UUID] | None = None,
+        context_loader: QueryContextLoader | None = None,
     ) -> QueryOutcome:
         """Guardrail, classify, and retrieve only if the intent warrants it."""
         guardrails = await self.guardrails.run(query)
@@ -143,11 +165,82 @@ class QueryService:
                 workspace_id=workspace_id,
             )
 
-        # ...and only here is anything spent
+        context = QueryExecutionContext(
+            document_ids=tuple(document_ids) if document_ids is not None else None
+        )
+        if context_loader is not None:
+            # Conversation scope and history are not even read until the raw
+            # current message has passed both safety and intent gates.
+            context = await context_loader()
+            document_id = None
+            document_ids = list(context.document_ids) if context.document_ids is not None else None
+            if context.document_ids == ():
+                return self._refused(
+                    query,
+                    intent=judgement.intent,
+                    confidence=judgement.confidence,
+                    decision=QueryDecision.SCOPE_UNAVAILABLE,
+                    reason="selected_scope_empty",
+                    guardrails=guardrails,
+                    actor=actor,
+                    workspace_id=workspace_id,
+                    context=context,
+                )
+
+        effective_query = query
+        resolution: ContextResolution | None = None
+        if self.resolver is not None and context.history:
+            try:
+                resolution = await self.resolver.resolve(query, context.history)
+            except ResolverUnavailableError as exc:
+                logger.warning(
+                    "context_resolution_unavailable",
+                    workspace_id=str(workspace_id),
+                    actor_id=str(actor.id),
+                    failure_type=type(exc).__name__,
+                    history_turns=len(context.history),
+                    query_chars=len(query),
+                )
+                resolution = ContextResolution(
+                    standalone_query=query,
+                    used_history=False,
+                    needs_clarification=False,
+                    reason_code=ContextReason.FALLBACK,
+                )
+            if resolution.needs_clarification:
+                return self._refused(
+                    query,
+                    intent=judgement.intent,
+                    confidence=judgement.confidence,
+                    decision=QueryDecision.CLARIFY,
+                    reason=resolution.reason_code.value,
+                    guardrails=guardrails,
+                    actor=actor,
+                    workspace_id=workspace_id,
+                    context=context,
+                    resolution=resolution,
+                )
+            effective_query = resolution.standalone_query
+
+        if context.scope_degraded and self._mentions_unavailable(effective_query, context):
+            return self._refused(
+                effective_query,
+                intent=judgement.intent,
+                confidence=judgement.confidence,
+                decision=QueryDecision.SCOPE_UNAVAILABLE,
+                reason="unavailable_document_named",
+                guardrails=guardrails,
+                actor=actor,
+                workspace_id=workspace_id,
+                context=context,
+                resolution=resolution,
+            )
+
+        # ...and only here is retrieval spent
         result = await self.search.search(
             actor,
             workspace_id,
-            query,
+            effective_query,
             mode=mode,
             limit=limit,
             semantic_min_score=semantic_min_score,
@@ -160,8 +253,11 @@ class QueryService:
         # the provider unavailable - all return sources without an answer rather
         # than failing the request.
         answer = None
+        selected_sources: tuple[SearchHit, ...] = ()
         if self.answers is not None and result.hits:
-            answer = await self.answers.answer(query, result.hits)
+            attempt = await self.answers.answer(effective_query, result.hits)
+            answer = attempt.answer
+            selected_sources = attempt.selected_sources
 
         self._log(
             actor,
@@ -175,7 +271,7 @@ class QueryService:
             answered=answer is not None,
         )
         return QueryOutcome(
-            query=query,
+            query=effective_query,
             intent=judgement.intent,
             confidence=judgement.confidence,
             decision=decision,
@@ -185,6 +281,10 @@ class QueryService:
             hits=result.hits,
             message=self._retrieval_message(result.hits, answer),
             answer=answer,
+            selected_sources=selected_sources,
+            context_resolution=resolution,
+            scope_degraded=context.scope_degraded,
+            unavailable_documents=context.unavailable_documents,
         )
 
     @staticmethod
@@ -214,6 +314,8 @@ class QueryService:
         guardrails: GuardrailOutcome,
         actor: User,
         workspace_id: uuid.UUID,
+        context: QueryExecutionContext | None = None,
+        resolution: ContextResolution | None = None,
     ) -> QueryOutcome:
         """Every path that returns without retrieving.
 
@@ -223,6 +325,7 @@ class QueryService:
         self._log(
             actor, workspace_id, query, intent, decision, retrieved=False, hits=0, reason=reason
         )
+        execution_context = context or QueryExecutionContext(document_ids=None)
         return QueryOutcome(
             query=query,
             intent=intent,
@@ -233,7 +336,23 @@ class QueryService:
             retrieval_performed=False,
             hits=(),
             message=_MESSAGES[decision],
+            context_resolution=resolution,
+            scope_degraded=execution_context.scope_degraded,
+            unavailable_documents=execution_context.unavailable_documents,
         )
+
+    @staticmethod
+    def _mentions_unavailable(query: str, context: QueryExecutionContext) -> bool:
+        """Usability heuristic only; retrieval ACL remains authoritative."""
+        haystack = " ".join(query.casefold().split())
+        for document in context.unavailable_documents:
+            candidates = {
+                " ".join(document.title.casefold().split()),
+                " ".join(document.file_name.rsplit(".", 1)[0].casefold().split()),
+            }
+            if any(len(candidate) >= 3 and candidate in haystack for candidate in candidates):
+                return True
+        return False
 
     def _log(
         self,

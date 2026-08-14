@@ -26,7 +26,13 @@ import structlog
 
 from app.ai import prompts
 from app.config import Settings, get_settings
-from app.services.ai_types import Citation, GeneratedAnswer, SearchHit
+from app.services.ai_types import (
+    AnswerAttempt,
+    Citation,
+    GeneratedAnswer,
+    GenerationFailure,
+    SearchHit,
+)
 from app.services.llm_service import ChatModel, LLMUnavailableError
 from app.services.token_counting import (
     ConservativeGenerationTokenCounter,
@@ -52,19 +58,19 @@ class AnswerService:
         self.settings = settings or get_settings()
         self.tokens = token_counter or ConservativeGenerationTokenCounter()
 
-    async def answer(self, question: str, hits: Sequence[SearchHit]) -> GeneratedAnswer | None:
-        """Generate a cited answer, or ``None`` if no model output is available.
+    async def answer(self, question: str, hits: Sequence[SearchHit]) -> AnswerAttempt:
+        """Generate a cited answer and report exactly which sources were supplied.
 
-        ``None`` covers both "there was nothing to answer from" and "the provider
-        was unavailable" - the caller turns each into its own message. It never
-        raises: a failed generation must not discard a successful retrieval.
+        Failure remains a value rather than an exception: a provider outage must
+        not discard successful retrieval, and the conversation ledger still
+        needs to record which passages were sent before the call failed.
         """
-        sources = self.select_sources(hits, question)
+        sources = tuple(self.select_sources(hits, question))
         if not sources:
             # Nothing grounded to say. Calling the model here would invite it to
             # answer from its own knowledge - the one thing the prompt forbids -
             # and bill us for the privilege.
-            return None
+            return AnswerAttempt(None, failure=GenerationFailure.NO_SOURCES)
 
         system = prompts.SYSTEM_PROMPT
         user = prompts.build_user_prompt(question, sources)
@@ -74,8 +80,16 @@ class AnswerService:
         except LLMUnavailableError as exc:
             # Logged as a fact about the provider, not as an application error:
             # the request still succeeds, with sources and no answer.
-            logger.warning("generation_unavailable", reason=str(exc), sources=len(sources))
-            return None
+            logger.warning(
+                "generation_unavailable",
+                failure_type=type(exc).__name__,
+                sources=len(sources),
+            )
+            return AnswerAttempt(
+                None,
+                selected_sources=sources,
+                failure=GenerationFailure.PROVIDER_UNAVAILABLE,
+            )
 
         citations = self.resolve_citations(completion.text, sources)
         logger.info(
@@ -86,12 +100,15 @@ class AnswerService:
             input_tokens=completion.input_tokens,
             output_tokens=completion.output_tokens,
         )
-        return GeneratedAnswer(
-            text=completion.text.strip(),
-            model=completion.model,
-            citations=citations,
-            input_tokens=completion.input_tokens,
-            output_tokens=completion.output_tokens,
+        return AnswerAttempt(
+            GeneratedAnswer(
+                text=completion.text.strip(),
+                model=completion.model,
+                citations=citations,
+                input_tokens=completion.input_tokens,
+                output_tokens=completion.output_tokens,
+            ),
+            selected_sources=sources,
         )
 
     def select_sources(self, hits: Sequence[SearchHit], question: str = "") -> list[SearchHit]:

@@ -292,6 +292,8 @@ class QueryDecision(StrEnum):
     ANSWER_DIRECTLY = "answer_directly"
     DECLINE = "decline"
     BLOCK = "block"
+    CLARIFY = "clarify"
+    SCOPE_UNAVAILABLE = "scope_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +321,47 @@ class IntentJudgement:
     intent: QueryIntent
     confidence: float
     reason: str
+
+
+class ContextReason(StrEnum):
+    REWRITTEN = "rewritten"
+    UNCHANGED = "unchanged"
+    AMBIGUOUS = "ambiguous"
+    FALLBACK = "fallback"
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationTurn:
+    user_message: str
+    assistant_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextResolution:
+    standalone_query: str
+    used_history: bool
+    needs_clarification: bool
+    reason_code: ContextReason
+
+
+@dataclass(frozen=True, slots=True)
+class UnavailableDocument:
+    document_id: uuid.UUID
+    title: str
+    file_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class QueryExecutionContext:
+    """Conversation-owned state loaded only after the raw query is safe."""
+
+    document_ids: tuple[uuid.UUID, ...] | None
+    history: tuple[ConversationTurn, ...] = ()
+    unavailable_documents: tuple[UnavailableDocument, ...] = ()
+
+    @property
+    def scope_degraded(self) -> bool:
+        return bool(self.unavailable_documents)
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,6 +399,26 @@ class GeneratedAnswer:
     output_tokens: int | None = None
 
 
+class GenerationFailure(StrEnum):
+    NO_SOURCES = "no_sources"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerAttempt:
+    """Internal generation result, including exactly what reached the model.
+
+    ``selected_sources`` is deliberately kept out of the public query DTO. The
+    durable conversation layer needs it to distinguish retrieved hits from the
+    passages that could have influenced generated prose, without adding another
+    chunk-content field to every stateless ``/query`` response.
+    """
+
+    answer: GeneratedAnswer | None
+    selected_sources: tuple[SearchHit, ...] = ()
+    failure: GenerationFailure | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class QueryOutcome:
     query: str
@@ -368,6 +431,10 @@ class QueryOutcome:
     hits: tuple[SearchHit, ...] = ()
     message: str | None = None
     answer: GeneratedAnswer | None = None
+    selected_sources: tuple[SearchHit, ...] = ()
+    context_resolution: ContextResolution | None = None
+    scope_degraded: bool = False
+    unavailable_documents: tuple[UnavailableDocument, ...] = ()
 
 
 IndexStatus = Literal["indexed", "skipped", "failed"]
