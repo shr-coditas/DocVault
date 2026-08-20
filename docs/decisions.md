@@ -848,15 +848,20 @@ the sum was not: four billed calls for one question, four places to look when a
 turn went wrong, and roughly half the code existing to describe how the other
 half could be swapped out. This branch replaces it with a supervisor.
 
-- **One node decides, and it is the only node that asks a model.** `screen`,
+- **Six nodes, one of which asks a model.** `guard` (is the message usable),
+  `classify` (what is it, and is the conversation's scope still there),
   `retrieve`, `write` and `respond` are deterministic; `supervise` reads the
   conversation, the question and the excerpts found so far and returns one of
   five actions. It is asked again after each step, so what the analyzer, the
   planner and the grader used to decide separately is now one decision with one
   log line and one prompt to iterate on.
-- **Safety stays out of the model's hands entirely.** The deterministic screen -
+- **Routing is edges, not hidden control flow.** A node that picks a branch
+  writes `next_step`; `graph_manager` turns that into `add_conditional_edges`
+  with the allowed targets listed beside each one. The shape of the agent is
+  twelve readable lines in one file, and the work is in another.
+- **Safety stays out of the model's hands entirely.** `guard` and `classify` -
   guardrail chain, injection patterns, greeting and out-of-scope rules, revoked
-  conversation scope - runs before the supervisor and ends the turn on its own.
+  conversation scope - run before the supervisor and end the turn on their own.
   The supervisor may *decline* a message it reads as off-topic; it can never be
   argued into allowing one of these, because it never sees them. The layered
   analyzer's model-side safety verdict is gone with it: the regex rules and the

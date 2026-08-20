@@ -9,8 +9,9 @@ import json
 import math
 import zlib
 from collections.abc import Sequence
+from typing import Any
 
-from app.ai.agent.supervisor import Supervision
+from app.ai.agent.prompt_utils import Supervision
 from app.services.ai_types import (
     ContextReason,
     ContextResolution,
@@ -201,53 +202,16 @@ class UnavailableContextualResolver:
         raise ResolverUnavailableError("resolver unavailable")
 
 
-class FakeSupervisor:
-    """A scripted supervisor, and a record of every brief it was handed.
+class RecordingSupervisor:
+    """Base for the supervisor doubles: remembers the brief, decides nothing.
 
-    The briefs matter as much as the decisions: several tests assert that a
-    hostile message never reached one, or that the conversation history did.
+    ``ainvoke`` is the whole interface, because the real supervisor is a chat
+    model pinned to the `Supervision` schema and nothing more. Recording the
+    human message proves what was actually sent - several tests assert that a
+    hostile question never reached a model, or that the history did.
     """
 
-    def __init__(self, *decisions: Supervision) -> None:
-        self.decisions = list(decisions)
-        self.briefs: list[str] = []
-
-    async def decide(self, brief: str) -> Supervision:
-        self.briefs.append(brief)
-        if not self.decisions:
-            raise AssertionError("the supervisor was asked one more time than scripted")
-        return self.decisions.pop(0)
-
-
-class UnavailableSupervisor:
     def __init__(self) -> None:
-        self.briefs: list[str] = []
-
-    async def decide(self, brief: str) -> Supervision:
-        self.briefs.append(brief)
-        raise RuntimeError("the supervisor provider is unavailable")
-
-
-class OfflineSupervisor:
-    """A supervisor with no model behind it: search once, then answer.
-
-    It reads the brief exactly as the real one does, so the integration suite
-    drives the whole loop - screen, supervise, retrieve, supervise, write -
-    without a provider and without a scripted answer per test.
-    """
-
-    def __init__(
-        self,
-        *,
-        rewrite_to: str | None = None,
-        clarify: bool = False,
-        unsupported: bool = False,
-    ) -> None:
-        # The three things a test usually wants to pin: how a follow-up gets
-        # resolved, that it cannot be, and that the sources do not answer it.
-        self.rewrite_to = rewrite_to
-        self.clarify = clarify
-        self.unsupported = unsupported
         self.briefs: list[str] = []
 
     @property
@@ -259,17 +223,64 @@ class OfflineSupervisor:
     def questions(self) -> list[str]:
         return [json.loads(brief)["question"] for brief in self.briefs]
 
-    async def decide(self, brief: str) -> Supervision:
+    async def ainvoke(self, messages: Sequence[Any], **kwargs: Any) -> Supervision:
+        brief = str(messages[-1].content)
         self.briefs.append(brief)
-        payload = json.loads(brief)
+        return self.decide(json.loads(brief))
+
+    def decide(self, brief: dict[str, Any]) -> Supervision:
+        raise NotImplementedError
+
+
+class FakeSupervisor(RecordingSupervisor):
+    """Scripted, one decision per pass, and loud if a test scripts too few."""
+
+    def __init__(self, *decisions: Supervision) -> None:
+        super().__init__()
+        self.decisions = list(decisions)
+
+    def decide(self, brief: dict[str, Any]) -> Supervision:
+        if not self.decisions:
+            raise AssertionError("the supervisor was asked one more time than scripted")
+        return self.decisions.pop(0)
+
+
+class UnavailableSupervisor(RecordingSupervisor):
+    def decide(self, brief: dict[str, Any]) -> Supervision:
+        raise RuntimeError("the supervisor provider is unavailable")
+
+
+class OfflineSupervisor(RecordingSupervisor):
+    """A supervisor with no model behind it: search once, then answer.
+
+    It reads the brief exactly as the real one does, so the integration suite
+    drives the whole loop - guard, classify, supervise, retrieve, write -
+    without a provider and without a scripted answer per test.
+    """
+
+    def __init__(
+        self,
+        *,
+        rewrite_to: str | None = None,
+        clarify: bool = False,
+        unsupported: bool = False,
+    ) -> None:
+        super().__init__()
+        # The three things a test usually wants to pin: how a follow-up gets
+        # resolved, that it cannot be, and that the sources do not answer it.
+        self.rewrite_to = rewrite_to
+        self.clarify = clarify
+        self.unsupported = unsupported
+
+    def decide(self, brief: dict[str, Any]) -> Supervision:
         if self.clarify:
             return Supervision(action="clarify", reason="ambiguous_referent")
-        if payload["sources"]:
+        if brief["sources"]:
             if self.unsupported:
                 return Supervision(action="unsupported", reason="does_not_answer_it")
             return Supervision(action="answer", reason="sources_in_hand")
-        if payload["searches_left"]:
-            question = self.rewrite_to or payload["question"]
+        if brief["searches_left"]:
+            question = self.rewrite_to or brief["question"]
             return Supervision(
                 action="search",
                 question=question if self.rewrite_to else "",

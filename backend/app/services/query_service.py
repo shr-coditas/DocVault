@@ -36,11 +36,12 @@ intent gate decides *whether* to search, never *what may be seen*.
 
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import structlog
+from langchain_core.runnables import Runnable
 
 from app.ai import prompts
-from app.ai.agent.supervisor import Supervisor
 from app.config import Settings, get_settings
 from app.models.user import User
 from app.services.ai_types import (
@@ -107,7 +108,7 @@ class QueryService:
         classifier: IntentClassifier | None = None,
         answers: AnswerService | None = None,
         resolver: ContextualQueryResolver | None = None,
-        supervisor: Supervisor | None = None,
+        supervisor: Runnable[Any, Any] | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
@@ -159,7 +160,7 @@ class QueryService:
 
         # Imported here so that API startup, and every request on the linear
         # path, gets nowhere near LangGraph.
-        from app.ai.agent import AgentContext, run_query_graph
+        from app.ai.agent import AgentContext, run_workflow
 
         # The conversation's scope and history are resolved before the graph
         # starts rather than inside it. History is state, not a step, and the
@@ -174,7 +175,7 @@ class QueryService:
             context = await context_loader()
             document_id = None
 
-        return await run_query_graph(
+        return await run_workflow(
             query,
             context.history,
             AgentContext(

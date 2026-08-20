@@ -1,32 +1,53 @@
-"""The nodes of one query turn. Four are deterministic; one asks a model."""
+"""The agent: what a turn remembers, what it is allowed to touch, and the six
+functions that move it along.
 
+    guard      is this message usable at all?          deterministic
+    classify   what is it, and is the scope still there?  deterministic
+    supervise  what should we do next?                  the one model call
+    retrieve   run the searches it asked for
+    write      draft over the sources, check the draft
+    respond    assemble the outcome
+
+Every node returns a plain dict of state updates. The ones that pick a branch
+also set ``next_step``, and ``graph_manager`` turns that into the edges - so the
+shape of the graph is in one file and the work is in this one.
+"""
+
+import asyncio
 import uuid
 from collections.abc import Sequence
-from typing import Literal
+from dataclasses import dataclass
+from typing import Annotated, Any, NotRequired, TypedDict
 
 import structlog
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import Runnable
+from langgraph.graph.message import add_messages
 from langgraph.runtime import Runtime
-from langgraph.types import Command
 
 from app.ai import prompts
-from app.ai.agent.context import AgentContext
-from app.ai.agent.state import QueryState
-from app.ai.agent.supervisor import Supervision, build_brief
+from app.ai.agent.prompt_utils import SUPERVISOR_PROMPT, Supervision, build_brief
 from app.config import Settings
+from app.models.user import User
 from app.services.ai_types import (
+    AnswerDraft,
     ContextReason,
     ContextResolution,
+    GeneratedAnswer,
     GuardrailOutcome,
+    OutputVerdict,
     QueryDecision,
     QueryIntent,
     QueryOutcome,
     SearchHit,
+    SearchMode,
     UnavailableDocument,
 )
+from app.services.answer_service import AnswerService
 from app.services.guardrail_service import GuardrailService
 from app.services.intent_service import RuleBasedIntentClassifier
 from app.services.output_guardrail_service import check_output
+from app.services.search_service import SearchService
 
 logger = structlog.stdlib.get_logger("docvault.query")
 
@@ -42,106 +63,163 @@ RULE_DECISIONS: dict[QueryIntent, QueryDecision] = {
     QueryIntent.PROMPT_INJECTION: QueryDecision.BLOCK,
 }
 
+# Fixed sentences for every ending that is not an answer. Nothing the caller
+# typed is echoed back: a refusal that quotes what it refused is how a refusal
+# becomes a reflection gadget.
+NON_RETRIEVAL_MESSAGES: dict[QueryDecision, str | None] = {
+    QueryDecision.RETRIEVE: None,  # `_message` decides; depends on what came back
+    QueryDecision.ANSWER_DIRECTLY: prompts.CHITCHAT_MESSAGE,
+    QueryDecision.DECLINE: prompts.DECLINE_MESSAGE,
+    QueryDecision.BLOCK: prompts.BLOCK_MESSAGE,
+    QueryDecision.CLARIFY: prompts.CLARIFICATION_MESSAGE,
+    QueryDecision.SCOPE_UNAVAILABLE: prompts.SCOPE_UNAVAILABLE_MESSAGE,
+}
 
-async def screen(
-    state: QueryState,
-    runtime: Runtime[AgentContext],
-) -> Command[Literal["supervise", "respond"]]:
-    """Everything that can be settled without a model, settled first.
 
-    Three of the four things this catches - an empty or oversized message, a
-    known instruction-override phrasing, a greeting - are decidable from the
-    text in microseconds. Deciding them here means a caller hammering injections
-    is refused at regex cost rather than at inference cost, and it means no
-    hostile message is ever put in front of the supervisor.
+@dataclass(slots=True)
+class AgentContext:
+    """
+    LangGraph hands this to every node as ``runtime.context``. It is deliberately
+    not graph state: state is what the supervisor reads and writes, and the
+    supervisor must not be able to change who is asking or which documents are
+    within reach. A rewritten search can look elsewhere in what this actor may
+    already read, and nowhere else.
+    """
 
-    Safety in particular stays here on purpose. The supervisor can decline a
-    message it reads as off-topic, but it cannot be talked into *allowing* one
-    of these, because it never sees them.
+    actor: User
+    workspace_id: uuid.UUID
+    search: SearchService
+    answers: AnswerService
+    # A chat model already pinned to the ``Supervision`` schema - see
+    # ``workflow_manager.build_supervisor``. Held as a plain runnable so a test
+    # can pass anything with ``ainvoke``.
+    supervisor: Runnable[Any, Any]
+    settings: Settings
+
+    # The conversation's pinned documents, already narrowed to the ones this
+    # actor can still open, or None for a workspace-wide question.
+    document_ids: tuple[uuid.UUID, ...] | None = None
+    # Pinned documents the actor has lost access to. Retrieval already excludes
+    # them; these are kept so the turn can say so rather than answer from a
+    # quietly smaller corpus.
+    unavailable_documents: tuple[UnavailableDocument, ...] = ()
+
+    document_id: uuid.UUID | None = None
+    limit: int | None = None
+    semantic_min_score: float | None = None
+    mode: SearchMode = SearchMode.HYBRID
+
+    @property
+    def scope_degraded(self) -> bool:
+        return bool(self.unavailable_documents)
+
+
+class State(TypedDict):
+    # StateGraph's state as a typed dictionary containing an append-only list of messages. These messages form the chat history, which is all the state our simple assistant needs.
+    messages: Annotated[list[AnyMessage], add_messages]
+    question: NotRequired[str]
+    guardrails: NotRequired[GuardrailOutcome]
+    intent: NotRequired[QueryIntent]
+    confidence: NotRequired[float]
+    decision: NotRequired[QueryDecision]
+    reason: NotRequired[str]
+    resolved_from_history: NotRequired[bool]
+    next_step: NotRequired[str]
+    sources: NotRequired[tuple[SearchHit, ...]]
+    searches: NotRequired[tuple[str, ...]]
+    searched: NotRequired[tuple[str, ...]]
+    searches_run: NotRequired[int]
+    draft: NotRequired[AnswerDraft | None]
+    supplied: NotRequired[tuple[SearchHit, ...]]
+    drafts_written: NotRequired[int]
+    verdict: NotRequired[OutputVerdict | None]
+    answer: NotRequired[GeneratedAnswer | None]
+    unsupported: NotRequired[bool]
+    outcome: NotRequired[QueryOutcome]
+
+
+async def guard(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
+    """Is this message usable at all?
+
+    Empty, oversized, or carrying zero-width characters - a few microseconds of
+    string work, and the cheapest possible place to say no. A caller hammering
+    junk is refused here at regex cost rather than at inference cost.
     """
     context = runtime.context
     question = str(state["messages"][-1].content)
-
     guardrails = await GuardrailService(settings=context.settings).run(question)
-    if not guardrails.passed:
-        failure = guardrails.failure
-        assert failure is not None  # `passed` is false, so one verdict failed
-        return Command(
-            update=_screened(
-                question,
-                guardrails,
-                # A guardrail failure is not a claim about what the message
-                # meant. It never got far enough to be read.
-                intent=QueryIntent.OUT_OF_SCOPE,
-                confidence=1.0,
-                decision=QueryDecision.BLOCK,
-                reason=f"{failure.name}: {failure.detail}",
-            ),
-            goto="respond",
-        )
+    if guardrails.passed:
+        return {"question": question, "guardrails": guardrails, "next_step": "classify"}
 
+    failure = guardrails.failure
+    assert failure is not None  # `passed` is false, so one verdict failed
+    return {
+        "question": question,
+        "guardrails": guardrails,
+        # A guardrail failure is not a claim about what the message meant. It
+        # never got far enough to be read.
+        "intent": QueryIntent.OUT_OF_SCOPE,
+        "confidence": 1.0,
+        "decision": QueryDecision.BLOCK,
+        "reason": f"{failure.name}: {failure.detail}",
+        "next_step": "respond",
+    }
+
+
+async def classify(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
+    """What is this message, and can this conversation still answer it?
+
+    Both questions are settled from rules, before the supervisor sees anything.
+    Safety stays here on purpose: the supervisor may decline a message it reads
+    as off-topic, but it cannot be talked into *allowing* a known
+    instruction-override phrasing, because it never sees one.
+
+    Scope is checked after intent rather than before it, and the order matters -
+    a greeting sent to a conversation whose documents have all been revoked is
+    still a greeting, and answering it with a scope refusal would be a puzzle.
+    """
+    context = runtime.context
+    question = state["question"]
     judgement = await RULES.classify(question)
     decision = RULE_DECISIONS[judgement.intent]
+    update: dict[str, object] = {
+        "intent": judgement.intent,
+        "confidence": judgement.confidence,
+        "decision": decision,
+        "reason": judgement.reason,
+        "next_step": "respond",
+    }
     if decision is not QueryDecision.RETRIEVE:
-        return Command(
-            update=_screened(
-                question,
-                guardrails,
-                intent=judgement.intent,
-                confidence=judgement.confidence,
-                decision=decision,
-                reason=judgement.reason,
-            ),
-            goto="respond",
-        )
+        return update
 
     scope_failure = _scope_failure(question, context)
     if scope_failure is not None:
-        return Command(
-            update=_screened(
-                question,
-                guardrails,
-                intent=judgement.intent,
-                confidence=judgement.confidence,
-                decision=QueryDecision.SCOPE_UNAVAILABLE,
-                reason=scope_failure,
-            ),
-            goto="respond",
-        )
-
-    return Command(
-        update=_screened(
-            question,
-            guardrails,
-            intent=judgement.intent,
-            confidence=judgement.confidence,
-            decision=decision,
-            reason=judgement.reason,
-        ),
-        goto="supervise",
-    )
+        return {
+            **update,
+            "decision": QueryDecision.SCOPE_UNAVAILABLE,
+            "reason": scope_failure,
+        }
+    return {**update, "next_step": "supervise"}
 
 
-async def supervise(
-    state: QueryState,
-    runtime: Runtime[AgentContext],
-) -> Command[Literal["retrieve", "write", "respond"]]:
+async def supervise(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
     """Read the conversation and what has been found, and pick the next step.
 
     This runs once per pass around the loop, so a two-search turn asks three
-    times: search, search again, answer. Each call sees the same brief the last
-    one did plus whatever came back, which is what lets one decision replace the
+    times: search, search again, answer. Each call sees the brief the last one
+    did plus whatever came back, which is what lets one decision replace the
     separate analyze, plan and grade calls the previous design made.
     """
     context = runtime.context
     settings = context.settings
     sources = state.get("sources", ())
+    question = state["question"]
     searches_run = state.get("searches_run", 0)
     searches_left = max(0, settings.agent_max_searches - searches_run)
     verdict = state.get("verdict")
 
     brief = build_brief(
-        state["question"],
+        question,
         # Everything before the message being answered. The supervisor uses it
         # only to resolve references; it is quoted data in the brief.
         state["messages"][:-1],
@@ -153,7 +231,15 @@ async def supervise(
     )
 
     try:
-        decision = await context.supervisor.decide(brief)
+        response = await asyncio.wait_for(
+            context.supervisor.ainvoke(
+                [SystemMessage(content=SUPERVISOR_PROMPT), HumanMessage(content=brief)]
+            ),
+            timeout=settings.agent_timeout_seconds,
+        )
+        if not isinstance(response, Supervision):
+            raise TypeError("the supervisor returned something other than a decision")
+        decision = response
     except Exception as exc:
         # One model call, one place that copes with it losing. An outage must not
         # cost the user their turn, so fall back to what an unsupervised pipeline
@@ -165,19 +251,14 @@ async def supervise(
             failure_type=type(exc).__name__,
             searches_run=searches_run,
         )
+        first_pass = bool(searches_left) and not sources
         decision = Supervision(
-            action="search" if searches_left and not sources else "answer",
-            searches=[state["question"]] if searches_left and not sources else [],
+            action="search" if first_pass else "answer",
+            searches=[question] if first_pass else [],
             reason="supervisor_unavailable",
         )
 
     decision = _within_budget(decision, state, settings)
-    question = decision.question.strip() or state["question"]
-    update: dict[str, object] = {"reason": decision.reason}
-    if question != state["question"]:
-        update["question"] = question
-        update["resolved_from_history"] = True
-
     logger.info(
         "supervisor_decision",
         workspace_id=str(context.workspace_id),
@@ -188,28 +269,29 @@ async def supervise(
         sources=len(sources),
     )
 
+    update: dict[str, object] = {"reason": decision.reason}
+    resolved = decision.question.strip()
+    if resolved and resolved != question:
+        update["question"] = resolved
+        update["resolved_from_history"] = True
+
     if decision.action == "search":
-        return Command(update={**update, "searches": tuple(decision.searches)}, goto="retrieve")
+        return {**update, "searches": tuple(decision.searches), "next_step": "retrieve"}
     if decision.action == "answer":
-        return Command(update=update, goto="write")
+        return {**update, "next_step": "write"}
     if decision.action == "clarify":
-        return Command(update={**update, "decision": QueryDecision.CLARIFY}, goto="respond")
+        return {**update, "decision": QueryDecision.CLARIFY, "next_step": "respond"}
     if decision.action == "refuse":
-        return Command(
-            update={
-                **update,
-                "intent": QueryIntent.OUT_OF_SCOPE,
-                "decision": QueryDecision.DECLINE,
-            },
-            goto="respond",
-        )
-    return Command(update={**update, "unsupported": True}, goto="respond")
+        return {
+            **update,
+            "intent": QueryIntent.OUT_OF_SCOPE,
+            "decision": QueryDecision.DECLINE,
+            "next_step": "respond",
+        }
+    return {**update, "unsupported": True, "next_step": "respond"}
 
 
-async def retrieve(
-    state: QueryState,
-    runtime: Runtime[AgentContext],
-) -> Command[Literal["supervise"]]:
+async def retrieve(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
     """Run the searches the supervisor asked for, then report back.
 
     They run one after another. A request-scoped ``AsyncSession`` cannot execute
@@ -218,8 +300,9 @@ async def retrieve(
     that is worth doing only once these searches are measured.
     """
     context = runtime.context
+    asked = state.get("searches", ())
     merged = state.get("sources", ())
-    for query in state.get("searches", ()):
+    for query in asked:
         result = await context.search.search(
             context.actor,
             context.workspace_id,
@@ -231,21 +314,15 @@ async def retrieve(
             document_ids=(list(context.document_ids) if context.document_ids is not None else None),
         )
         merged = _merge(merged, result.hits, limit=context.limit)
-    return Command(
-        update={
-            "sources": merged,
-            "searches": (),
-            "searched": (*state.get("searched", ()), *state.get("searches", ())),
-            "searches_run": state.get("searches_run", 0) + 1,
-        },
-        goto="supervise",
-    )
+    return {
+        "sources": merged,
+        "searches": (),
+        "searched": (*state.get("searched", ()), *asked),
+        "searches_run": state.get("searches_run", 0) + 1,
+    }
 
 
-async def write(
-    state: QueryState,
-    runtime: Runtime[AgentContext],
-) -> Command[Literal["supervise", "respond"]]:
+async def write(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
     """Draft over the retrieved sources, check the raw text, then cite it.
 
     The order is the point. Citation resolution *drops* markers that point at no
@@ -266,15 +343,13 @@ async def write(
     if attempt.draft is None:
         # The provider was unavailable, or nothing fit the source budget.
         # `respond` reports which; there is nothing to check.
-        return Command(
-            update={
-                "draft": None,
-                "answer": None,
-                "supplied": attempt.selected_sources,
-                "drafts_written": written,
-            },
-            goto="respond",
-        )
+        return {
+            "draft": None,
+            "answer": None,
+            "supplied": attempt.selected_sources,
+            "drafts_written": written,
+            "next_step": "respond",
+        }
 
     checked = check_output(
         attempt.draft.text,
@@ -283,16 +358,14 @@ async def write(
         settings=context.settings,
     )
     if checked.passed:
-        return Command(
-            update={
-                "answer": context.answers.finalize_draft(attempt.draft, attempt.selected_sources),
-                "draft": None,
-                "supplied": attempt.selected_sources,
-                "verdict": checked,
-                "drafts_written": written,
-            },
-            goto="respond",
-        )
+        return {
+            "answer": context.answers.finalize_draft(attempt.draft, attempt.selected_sources),
+            "draft": None,
+            "supplied": attempt.selected_sources,
+            "verdict": checked,
+            "drafts_written": written,
+            "next_step": "respond",
+        }
 
     logger.warning(
         "output_rejected",
@@ -305,26 +378,24 @@ async def write(
         # text that should be copied into a log shipped somewhere else.
         draft_chars=len(attempt.draft.text),
     )
-    return Command(
+    return {
         # Cleared on every rejection path, so nothing downstream - the outcome,
         # the conversation ledger, a log line - can reach the refused text.
-        update={
-            "draft": None,
-            "answer": None,
-            "supplied": attempt.selected_sources,
-            "verdict": checked,
-            "drafts_written": written,
-        },
+        "draft": None,
+        "answer": None,
+        "supplied": attempt.selected_sources,
+        "verdict": checked,
+        "drafts_written": written,
         # A security failure is terminal. A draft that tried to disclose the
         # system prompt has forfeited its turn, and asking the supervisor
         # whether to try again would put that call in the model's hands. A
         # grounding failure is a quality problem, so the supervisor gets to
         # decide whether the sources support a better attempt.
-        goto="respond" if checked.security_failure else "supervise",
-    )
+        "next_step": "respond" if checked.security_failure else "supervise",
+    }
 
 
-async def respond(state: QueryState, runtime: Runtime[AgentContext]) -> dict[str, object]:
+async def respond(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
     """Assemble the turn's outcome and say, once, what happened."""
     context = runtime.context
     decision = state["decision"]
@@ -371,31 +442,11 @@ async def respond(state: QueryState, runtime: Runtime[AgentContext]) -> dict[str
         output_verdict=state.get("verdict"),
         generation_attempts=state.get("drafts_written", 0),
     )
-    # The turn read as a chat: whatever the user is actually shown is appended
+    # The turn reads as a chat: whatever the user is actually shown is appended
     # to the history the next turn will be started with.
     return {
         "outcome": outcome,
         "messages": [AIMessage(content=answer.text if answer is not None else (message or ""))],
-    }
-
-
-def _screened(
-    question: str,
-    guardrails: GuardrailOutcome,
-    *,
-    intent: QueryIntent,
-    confidence: float,
-    decision: QueryDecision,
-    reason: str,
-) -> dict[str, object]:
-    """One shape for everything `screen` decides, however it decided it."""
-    return {
-        "question": question,
-        "guardrails": guardrails,
-        "intent": intent,
-        "confidence": confidence,
-        "decision": decision,
-        "reason": reason,
     }
 
 
@@ -429,7 +480,7 @@ def _names_unavailable(question: str, documents: Sequence[UnavailableDocument]) 
 
 def _within_budget(
     decision: Supervision,
-    state: QueryState,
+    state: State,
     settings: Settings,
 ) -> Supervision:
     """Keep the supervisor's choice inside limits it does not get to set.
@@ -501,7 +552,7 @@ def _merge(
     return tuple(ranked if limit is None else ranked[:limit])
 
 
-def _message(state: QueryState, *, retrieved: bool) -> str | None:
+def _message(state: State, *, retrieved: bool) -> str | None:
     """What the user is shown when there is no answer to show them.
 
     A turn that retrieved and produced nothing has five distinct causes that
@@ -531,14 +582,14 @@ def _message(state: QueryState, *, retrieved: bool) -> str | None:
     return prompts.GENERATION_UNAVAILABLE_MESSAGE
 
 
-def _evidence_sufficient(state: QueryState, *, retrieved: bool) -> bool | None:
+def _evidence_sufficient(state: State, *, retrieved: bool) -> bool | None:
     """None means nobody judged, which is not the same as judging it thin."""
     if not retrieved or not state.get("sources"):
         return None
     return not state.get("unsupported", False)
 
 
-def _resolution(state: QueryState) -> ContextResolution | None:
+def _resolution(state: State) -> ContextResolution | None:
     """How the follow-up was read, reported only when there was a history to read."""
     if len(state["messages"]) < 2:
         return None
@@ -556,16 +607,3 @@ def _resolution(state: QueryState) -> ContextResolution | None:
             else ContextReason.UNCHANGED
         ),
     )
-
-
-# Fixed sentences for every ending that is not an answer. Nothing the caller
-# typed is echoed back: a refusal that quotes what it refused is how a refusal
-# becomes a reflection gadget.
-NON_RETRIEVAL_MESSAGES: dict[QueryDecision, str | None] = {
-    QueryDecision.RETRIEVE: None,  # `_message` decides; depends on what came back
-    QueryDecision.ANSWER_DIRECTLY: prompts.CHITCHAT_MESSAGE,
-    QueryDecision.DECLINE: prompts.DECLINE_MESSAGE,
-    QueryDecision.BLOCK: prompts.BLOCK_MESSAGE,
-    QueryDecision.CLARIFY: prompts.CLARIFICATION_MESSAGE,
-    QueryDecision.SCOPE_UNAVAILABLE: prompts.SCOPE_UNAVAILABLE_MESSAGE,
-}

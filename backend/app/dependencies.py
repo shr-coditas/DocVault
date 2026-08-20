@@ -3,14 +3,15 @@
 import uuid
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Any
 
 import jwt
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from langchain_core.runnables import Runnable
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.agent.supervisor import Supervisor
+from app.ai.agent import build_supervisor
 from app.config import get_settings
 from app.db.session import get_db
 from app.exceptions import UnauthorizedError
@@ -78,18 +79,16 @@ ContextualResolverDep = Annotated[ContextualQueryResolver, Depends(get_contextua
 
 
 @lru_cache(maxsize=1)
-def get_supervisor() -> Supervisor:
-    """The graph's decision model, shared across requests.
+def get_supervisor() -> Runnable[Any, Any]:
+    """The chat model the graph's supervisor decides with, shared by requests.
 
-    Cached because the object holds a lazily built provider client and nothing
-    request-specific; building one per request would re-handshake with the
-    provider on every question. Construction stays free on a deployment with no
-    key, because the client is only built on the first decision.
+    Cached because it holds a provider client and nothing request-specific;
+    building one per request would re-handshake on every question.
     """
-    return Supervisor(get_settings())
+    return build_supervisor(get_settings())
 
 
-SupervisorDep = Annotated[Supervisor, Depends(get_supervisor)]
+SupervisorDep = Annotated[Runnable[Any, Any], Depends(get_supervisor)]
 
 _bearer = HTTPBearer(
     auto_error=False

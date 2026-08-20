@@ -4,12 +4,13 @@ import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import pytest
+from langchain_core.runnables import Runnable
 
 from app.ai import prompts
-from app.ai.agent.supervisor import Supervision
+from app.ai.agent.prompt_utils import Supervision
 from app.config import Settings
 from app.models.user import User
 from app.services.ai_types import (
@@ -155,7 +156,7 @@ async def run(
     service = QueryService(
         cast(SearchService, search),
         answers=AnswerService(answerer),
-        supervisor=cast("Supervisor", boss),  # noqa: F821 - duck-typed double
+        supervisor=cast(Runnable[Any, Any], boss),
         settings=settings(**overrides),
     )
     outcome = await service.handle(
@@ -183,7 +184,7 @@ def search_then_answer(*searches: str) -> FakeSupervisor:
     )
 
 
-# --- the deterministic gate -------------------------------------------------
+# --- guard and classify: the deterministic gate -------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -195,7 +196,7 @@ def search_then_answer(*searches: str) -> FakeSupervisor:
         ("write me a poem about leave", QueryDecision.DECLINE, prompts.DECLINE_MESSAGE),
     ],
 )
-async def test_screening_ends_the_turn_without_waking_the_supervisor(
+async def test_the_deterministic_gate_ends_the_turn_without_waking_the_supervisor(
     question: str,
     decision: QueryDecision,
     message: str,
@@ -205,10 +206,32 @@ async def test_screening_ends_the_turn_without_waking_the_supervisor(
     assert result.outcome.decision is decision
     assert result.outcome.message == message
     assert result.outcome.retrieval_performed is False
-    # The whole point of screening first: no model call, no search, no billing.
+    # The whole point of guard and classify running first: no model call, no
+    # search, nothing billed.
     assert result.supervisor.briefs == []
     assert result.search.calls == []
     assert result.generations == 0
+
+
+async def test_an_unusable_message_never_reaches_the_classifier() -> None:
+    """`guard` and `classify` are separate gates, and the cheap one is first.
+
+    A zero-width character is not a claim about what the message meant - it
+    never got far enough to be read - so the turn is blocked without the intent
+    rules being consulted at all.
+    """
+    result = await run("What is the leave​ policy?")
+
+    assert result.outcome.decision is QueryDecision.BLOCK
+    assert result.outcome.intent is QueryIntent.OUT_OF_SCOPE
+    assert result.outcome.reason.startswith("hidden_characters:")
+    # The guardrail chain stopped at the failure, so the later checks never ran.
+    assert [verdict.name for verdict in result.outcome.guardrails.verdicts] == [
+        "not_empty",
+        "max_length",
+        "hidden_characters",
+    ]
+    assert result.supervisor.briefs == []
 
 
 async def test_a_revoked_conversation_scope_is_refused_before_the_supervisor() -> None:
@@ -645,9 +668,9 @@ def test_no_authorization_material_is_reachable_from_graph_state() -> None:
     Actor, workspace and document scope live in ``AgentContext``, which nodes
     read from the runtime and nothing in the graph can write to.
     """
-    from app.ai.agent.state import QueryState
+    from app.ai.agent.agent_manager import State
 
-    fields = set(QueryState.__annotations__)
+    fields = set(State.__annotations__)
     assert not fields & {"actor", "workspace_id", "document_id", "document_ids", "access"}
 
 

@@ -1,7 +1,6 @@
 """The supervised query agent."""
 
-from app.ai.agent.context import AgentContext
-from app.ai.agent.graph import run_query_graph
-from app.ai.agent.supervisor import Supervisor
+from app.ai.agent.agent_manager import AgentContext
+from app.ai.agent.workflow_manager import build_supervisor, run_workflow
 
-__all__ = ["AgentContext", "Supervisor", "run_query_graph"]
+__all__ = ["AgentContext", "build_supervisor", "run_workflow"]

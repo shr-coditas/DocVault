@@ -121,13 +121,13 @@ class Settings(BaseSettings):
         """Keep the graph's recursion limit ahead of the budgets it has to serve.
 
         Every node execution is one LangGraph superstep. The longest legal path
-        is screen, then a supervise/retrieve pair per search, then a
-        supervise/write pair per draft, then respond - so a raised search budget
+        is guard and classify, then a supervise/retrieve pair per search, then
+        a supervise/write pair per draft, then respond - so a raised budget
         with an unchanged step limit would surface as a GraphRecursionError on a
         live request. Refusing at startup makes it a configuration error, which
         is the kind of failure someone can act on.
         """
-        required = 2 + 2 * self.agent_max_searches + 2 * self.agent_max_drafts
+        required = 3 + 2 * self.agent_max_searches + 2 * self.agent_max_drafts
         if self.agent_max_steps < required:
             raise ValueError(
                 f"agent_max_steps must be at least {required} for "
