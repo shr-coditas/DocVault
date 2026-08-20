@@ -17,11 +17,8 @@ from app.dependencies import (
     ContextualResolverDep,
     DbSession,
     EmbedderDep,
-    EvidenceGraderDep,
-    OutputGuardrailDep,
-    QueryAnalyzerDep,
-    QueryPlannerDep,
     RerankerDep,
+    SupervisorDep,
     require_permission,
 )
 from app.models.user import User
@@ -47,19 +44,13 @@ def get_conversation_turn_service(
     reranker: RerankerDep,
     model: ChatModelDep,
     resolver: ContextualResolverDep,
-    grader: EvidenceGraderDep,
-    analyzer: QueryAnalyzerDep,
-    planner: QueryPlannerDep,
-    output_guardrail: OutputGuardrailDep,
+    supervisor: SupervisorDep,
 ) -> ConversationService:
     query = QueryService(
         SearchService(db, embedder, reranker=reranker),
         answers=AnswerService(model),
         resolver=resolver,
-        grader=grader,
-        analyzer=analyzer,
-        planner=planner,
-        output_guardrail=output_guardrail,
+        supervisor=supervisor,
     )
     return ConversationService(db, query=query)
 

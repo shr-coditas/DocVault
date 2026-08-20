@@ -23,25 +23,21 @@ from app.db.session import get_db
 from app.dependencies import (
     get_chat_model,
     get_embedder,
-    get_output_guardrail,
-    get_query_analyzer,
-    get_query_planner,
     get_reranker,
     get_storage_service,
+    get_supervisor,
 )
 from app.main import create_app
 from app.repository.document_repository import DocumentRepository
 from app.services.indexing_service import IndexingService
-from app.services.output_guardrail_service import DeterministicOutputGuardrail
-from app.services.query_planning_service import DirectQueryPlanner
 from app.services.query_service import BLOCK_MESSAGE, DECLINE_MESSAGE
 from app.services.storage_service import StorageService
 from tests.fakes import (
     FakeChatModel,
     FakeEmbedder,
     FakeReranker,
+    OfflineSupervisor,
     UnavailableChatModel,
-    offline_query_analyzer,
 )
 from tests.helpers import (
     WORKSPACES,
@@ -87,18 +83,17 @@ async def env(postgres_url: str, test_storage: StorageService) -> AsyncIterator[
 
     embedder = FakeEmbedder()
     model = FakeChatModel()
+    supervisor = OfflineSupervisor()
     app = create_app()
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_storage_service] = lambda: test_storage
     app.dependency_overrides[get_embedder] = lambda: embedder
     app.dependency_overrides[get_reranker] = FakeReranker
     app.dependency_overrides[get_chat_model] = lambda: model
-    # The agent seams are provider-backed by default; the graph-path tests set
-    # `agent_enabled`, so pin them to offline deterministic components exactly as
-    # the chat model is pinned. Legacy-path tests never consult them.
-    app.dependency_overrides[get_query_analyzer] = offline_query_analyzer
-    app.dependency_overrides[get_query_planner] = DirectQueryPlanner
-    app.dependency_overrides[get_output_guardrail] = DeterministicOutputGuardrail
+    # The supervisor is provider-backed by default. Pinned to the offline one
+    # exactly as the chat model is, so these tests exercise the real loop
+    # without a network call.
+    app.dependency_overrides[get_supervisor] = lambda: supervisor
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         owner = await signup(client, "owner@example.com")
@@ -564,8 +559,13 @@ async def test_an_inaccessible_document_never_reaches_the_model(env: Env) -> Non
     assert "payroll" in env.model.last_user_prompt
 
 
-async def test_invented_citation_markers_are_dropped(env: Env) -> None:
-    """A citation that resolves to nothing looks authoritative and cannot be checked."""
+async def test_an_invented_citation_marker_costs_the_answer(env: Env) -> None:
+    """A citation that resolves to nothing looks authoritative and cannot be checked.
+
+    The draft is checked before its markers are resolved, so an invented [99] is
+    caught rather than quietly deleted. It is the strongest single signal that a
+    draft is ungrounded, and the answer is withheld over it.
+    """
     env.app.dependency_overrides[get_chat_model] = lambda: FakeChatModel(
         reply="Real [1], invented [99], repeated [1]."
     )
@@ -573,5 +573,6 @@ async def test_invented_citation_markers_are_dropped(env: Env) -> None:
 
     body = await _query(env, "football", semantic_min_score=0.1)
 
-    # [99] dropped, [1] reported once despite being written twice
-    assert [citation["marker"] for citation in body["answer"]["citations"]] == [1]
+    assert body["answer"] is None
+    assert body["hits"]
+    assert body["message"] == prompts.REJECTED_ANSWER_MESSAGE

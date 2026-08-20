@@ -20,12 +20,9 @@ from app.dependencies import (
     get_chat_model,
     get_contextual_resolver,
     get_embedder,
-    get_evidence_grader,
-    get_output_guardrail,
-    get_query_analyzer,
-    get_query_planner,
     get_reranker,
     get_storage_service,
+    get_supervisor,
 )
 from app.main import create_app
 from app.models.conversation import (
@@ -37,23 +34,18 @@ from app.models.conversation import (
 )
 from app.repository.conversation_repository import ConversationRepository
 from app.repository.document_repository import DocumentRepository
-from app.services.ai_types import EvidenceGrade
 from app.services.conversation_service import REDACTED_ANSWER_MESSAGE
-from app.services.evidence_grading_service import DeterministicEvidenceGrader
 from app.services.indexing_service import IndexingService
 from app.services.llm_service import Completion
-from app.services.output_guardrail_service import DeterministicOutputGuardrail
-from app.services.query_planning_service import DirectQueryPlanner
 from app.services.storage_service import StorageService
 from tests.fakes import (
     FakeChatModel,
     FakeContextualResolver,
     FakeEmbedder,
-    FakeEvidenceGrader,
     FakeReranker,
+    OfflineSupervisor,
     UnavailableChatModel,
-    UnavailableContextualResolver,
-    offline_query_analyzer,
+    UnavailableSupervisor,
 )
 from tests.helpers import (
     WORKSPACES,
@@ -83,6 +75,7 @@ class Env:
     embedder: FakeEmbedder
     model: FakeChatModel
     resolver: FakeContextualResolver
+    supervisor: OfflineSupervisor
     owner: dict[str, str]
     viewer: dict[str, str]
     workspace_id: str
@@ -155,6 +148,7 @@ async def env(postgres_url: str, test_storage: StorageService) -> AsyncIterator[
     embedder = FakeEmbedder()
     model = FakeChatModel()
     resolver = FakeContextualResolver()
+    supervisor = OfflineSupervisor()
     app = create_app()
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_storage_service] = lambda: test_storage
@@ -162,15 +156,9 @@ async def env(postgres_url: str, test_storage: StorageService) -> AsyncIterator[
     app.dependency_overrides[get_reranker] = FakeReranker
     app.dependency_overrides[get_chat_model] = lambda: model
     app.dependency_overrides[get_contextual_resolver] = lambda: resolver
-    # Offline default that reproduces pre-6C behaviour (evidence is sufficient
-    # whenever anything was retrieved). Cases about the corrective loop override
-    # this again with a scripted grader.
-    app.dependency_overrides[get_evidence_grader] = DeterministicEvidenceGrader
-    # The 6D/6E seams are provider-backed by default; the graph-path turn tests
-    # set `agent_enabled`, so pin them offline exactly as the chat model is.
-    app.dependency_overrides[get_query_analyzer] = offline_query_analyzer
-    app.dependency_overrides[get_query_planner] = DirectQueryPlanner
-    app.dependency_overrides[get_output_guardrail] = DeterministicOutputGuardrail
+    # The supervisor is provider-backed by default; pinned offline exactly as
+    # the chat model is, so these tests drive the real loop with no network.
+    app.dependency_overrides[get_supervisor] = lambda: supervisor
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         owner = await signup(client, "turn-owner@example.com")
@@ -197,6 +185,7 @@ async def env(postgres_url: str, test_storage: StorageService) -> AsyncIterator[
             embedder=embedder,
             model=model,
             resolver=resolver,
+            supervisor=supervisor,
             owner=owner,
             viewer=viewer,
             workspace_id=workspace_id,
@@ -462,13 +451,19 @@ async def test_provider_failure_completes_with_the_supplied_source_ledger(env: E
     assert failing.calls == 1
 
 
-async def test_citation_free_answer_redacts_on_revoke_and_restores_on_regrant(
+async def test_uncited_supplied_sources_redact_on_revoke_and_restore_on_regrant(
     env: Env,
 ) -> None:
+    """Redaction follows what reached the model, not what the model cited.
+
+    A passage the model was given and chose not to cite still influenced the
+    prose, so it is recorded as supplied and the answer is withheld when access
+    to it goes away.
+    """
     document_id = await _seed_document(env, "payroll")
     conversation_id = await _create_conversation(env, headers=env.viewer)
-    citation_free = FakeChatModel(reply="A grounded answer without a marker.")
-    env.app.dependency_overrides[get_chat_model] = lambda: citation_free
+    partly_cited = FakeChatModel(reply="A grounded answer [1].")
+    env.app.dependency_overrides[get_chat_model] = lambda: partly_cited
 
     created = await _submit(
         env,
@@ -480,8 +475,9 @@ async def test_citation_free_answer_redacts_on_revoke_and_restores_on_regrant(
     assistant = created.json()["messages"][1]
     assert assistant["kind"] == "answer"
     assert assistant["sources"]
-    assert all(source["citation_marker"] is None for source in assistant["sources"])
-    assert any(source["supplied_to_model"] for source in assistant["sources"])
+    supplied = [source for source in assistant["sources"] if source["supplied_to_model"]]
+    assert supplied
+    assert any(source["citation_marker"] is None for source in supplied)
 
     restricted = await env.client.put(
         f"{WORKSPACES}/{env.workspace_id}/documents/{document_id}/visibility",
@@ -508,7 +504,7 @@ async def test_citation_free_answer_redacts_on_revoke_and_restores_on_regrant(
     regranted = await env.client.get(messages_url, headers=env.viewer)
     restored_answer = regranted.json()["items"][1]
     assert restored_answer["kind"] == "answer"
-    assert restored_answer["content"] == "A grounded answer without a marker."
+    assert restored_answer["content"] == "A grounded answer [1]."
     assert restored_answer["redacted"] is False
     assert restored_answer["sources"]
 
@@ -535,19 +531,19 @@ async def test_follow_up_uses_bounded_history_and_persists_only_the_resolved_que
 
     first = await _submit(env, conversation_id, content="football requirements")
     assert first.status_code == 201
-    assert env.resolver.calls == []  # first turn never pays for resolution
+    # A first turn has nothing to resolve against, and is shown nothing.
+    assert env.supervisor.histories[0] == []
 
-    resolver = FakeContextualResolver(standalone_query="football policy risks and requirements")
-    env.app.dependency_overrides[get_contextual_resolver] = lambda: resolver
+    supervisor = OfflineSupervisor(rewrite_to="football policy risks and requirements")
+    env.app.dependency_overrides[get_supervisor] = lambda: supervisor
     env.embedder.embedded_queries.clear()
     follow_up = await _submit(env, conversation_id, content="What about its risks?")
 
     assert follow_up.status_code == 201, follow_up.text
-    assert len(resolver.calls) == 1
-    current, history = resolver.calls[0]
-    assert current == "What about its risks?"
-    assert [(turn.user_message, turn.assistant_message) for turn in history] == [
-        ("football requirements", "A grounded answer [1].")
+    assert supervisor.questions[0] == "What about its risks?"
+    assert supervisor.histories[0] == [
+        {"role": "human", "content": "football requirements"},
+        {"role": "ai", "content": "A grounded answer [1]."},
     ]
     assert env.embedder.embedded_queries == ["football policy risks and requirements"]
     assert "Question: football policy risks and requirements" in env.model.last_user_prompt
@@ -581,10 +577,8 @@ async def test_graph_path_preserves_durable_contextual_follow_up(
         first = await _submit(env, conversation_id, content="graph-football requirements")
         assert first.status_code == 201
 
-        resolver = FakeContextualResolver(
-            standalone_query="graph-football policy risks and requirements"
-        )
-        env.app.dependency_overrides[get_contextual_resolver] = lambda: resolver
+        supervisor = OfflineSupervisor(rewrite_to="graph-football policy risks and requirements")
+        env.app.dependency_overrides[get_supervisor] = lambda: supervisor
         env.embedder.embedded_queries.clear()
         follow_up = await _submit(env, conversation_id, content="What about its risks?")
 
@@ -592,8 +586,7 @@ async def test_graph_path_preserves_durable_contextual_follow_up(
         assert follow_up.status_code == 201, follow_up.text
         assert follow_up.json()["messages"][1]["kind"] == "answer"
         assert env.embedder.embedded_queries == ["graph-football policy risks and requirements"]
-        assert len(resolver.calls) == 1
-        assert resolver.calls[0][0] == "What about its risks?"
+        assert supervisor.questions[0] == "What about its risks?"
 
         async with env.session_factory() as session:
             stored = (
@@ -622,10 +615,8 @@ async def test_graded_unsupported_evidence_is_recorded_without_generating(
     try:
         await _seed_document(env, "graded-football")
         conversation_id = await _create_conversation(env)
-        # No suggested wording, so the corrective loop has nothing to retry with
-        # and the verdict is final after the first attempt.
-        grader = FakeEvidenceGrader(EvidenceGrade(sufficient=False))
-        env.app.dependency_overrides[get_evidence_grader] = lambda: grader
+        supervisor = OfflineSupervisor(unsupported=True)
+        env.app.dependency_overrides[get_supervisor] = lambda: supervisor
         calls_before = env.model.calls
 
         response = await _submit(env, conversation_id, content="graded-football requirements")
@@ -640,7 +631,9 @@ async def test_graded_unsupported_evidence_is_recorded_without_generating(
         assert assistant["kind"] == MessageKind.UNSUPPORTED_EVIDENCE.value
         assert assistant["content"] == prompts.UNSUPPORTED_EVIDENCE_MESSAGE
         assert env.model.calls == calls_before
-        assert len(grader.calls) == 1
+        # The supervisor saw the passages and said they do not answer it, so no
+        # billed generation was spent on a paragraph they cannot support.
+        assert len(supervisor.briefs) == 2
         # The near-miss passages are still recorded; none reached the model.
         assert assistant["sources"]
         assert all(not source["supplied_to_model"] for source in assistant["sources"])
@@ -653,8 +646,8 @@ async def test_ambiguous_follow_up_clarifies_without_retrieval_or_generation(env
     await _seed_document(env)
     conversation_id = await _create_conversation(env)
     assert (await _submit(env, conversation_id)).status_code == 201
-    resolver = FakeContextualResolver(needs_clarification=True)
-    env.app.dependency_overrides[get_contextual_resolver] = lambda: resolver
+    supervisor = OfflineSupervisor(clarify=True)
+    env.app.dependency_overrides[get_supervisor] = lambda: supervisor
     env.embedder.embedded_queries.clear()
     model_calls = env.model.calls
 
@@ -665,15 +658,15 @@ async def test_ambiguous_follow_up_clarifies_without_retrieval_or_generation(env
     assert assistant["kind"] == "clarification"
     assert env.embedder.embedded_queries == []
     assert env.model.calls == model_calls
-    assert len(resolver.calls) == 1
+    assert len(supervisor.briefs) == 1
 
 
-async def test_hostile_current_message_is_blocked_before_history_or_resolver(env: Env) -> None:
+async def test_hostile_current_message_is_blocked_before_the_supervisor(env: Env) -> None:
     await _seed_document(env)
     conversation_id = await _create_conversation(env)
     assert (await _submit(env, conversation_id)).status_code == 201
-    resolver = FakeContextualResolver(standalone_query="football")
-    env.app.dependency_overrides[get_contextual_resolver] = lambda: resolver
+    supervisor = OfflineSupervisor()
+    env.app.dependency_overrides[get_supervisor] = lambda: supervisor
     env.embedder.embedded_queries.clear()
     model_calls = env.model.calls
 
@@ -685,28 +678,30 @@ async def test_hostile_current_message_is_blocked_before_history_or_resolver(env
 
     assert response.status_code == 201
     assert response.json()["messages"][1]["kind"] == "refusal"
-    assert resolver.calls == []
+    # Screening is deterministic and runs first, so the conversation was never
+    # put in front of a model at all.
+    assert supervisor.briefs == []
     assert env.embedder.embedded_queries == []
     assert env.model.calls == model_calls
 
 
-async def test_resolver_outage_falls_back_to_the_raw_question(env: Env) -> None:
+async def test_a_supervisor_outage_still_answers_the_question(env: Env) -> None:
     await _seed_document(env)
     conversation_id = await _create_conversation(env)
     assert (await _submit(env, conversation_id)).status_code == 201
-    unavailable = UnavailableContextualResolver()
-    env.app.dependency_overrides[get_contextual_resolver] = lambda: unavailable
+    unavailable = UnavailableSupervisor()
+    env.app.dependency_overrides[get_supervisor] = lambda: unavailable
     env.embedder.embedded_queries.clear()
 
     response = await _submit(env, conversation_id, content="football details")
 
     assert response.status_code == 201
+    # Degraded to one search for what was asked, and an answer over it.
     assert response.json()["messages"][1]["kind"] == "answer"
-    assert unavailable.calls == 1
     assert env.embedder.embedded_queries == ["football details"]
 
 
-async def test_history_with_a_revoked_supplied_source_is_not_sent_to_resolver(
+async def test_history_with_a_revoked_supplied_source_is_not_shown_to_the_supervisor(
     env: Env,
 ) -> None:
     football_id = await _seed_document(env, "football")
@@ -725,7 +720,7 @@ async def test_history_with_a_revoked_supplied_source_is_not_sent_to_resolver(
         headers=env.owner,
     )
     assert restricted.status_code == 200
-    env.resolver.calls.clear()
+    env.supervisor.briefs.clear()
 
     second = await _submit(
         env,
@@ -736,7 +731,10 @@ async def test_history_with_a_revoked_supplied_source_is_not_sent_to_resolver(
 
     assert second.status_code == 201
     assert second.json()["messages"][1]["kind"] == "answer"
-    assert env.resolver.calls == []
+    # The only earlier turn cited a document the asker can no longer open, so
+    # the supervisor is shown an empty history rather than an answer drawn from
+    # something they have since lost access to.
+    assert env.supervisor.histories[0] == []
 
 
 async def test_selected_scope_degrades_and_named_missing_document_refuses(env: Env) -> None:
@@ -781,13 +779,13 @@ async def test_selected_scope_degrades_and_named_missing_document_refuses(env: E
     assert env.model.calls == model_calls
 
 
-async def test_contextual_rewrite_cannot_widen_an_immutable_selected_scope(env: Env) -> None:
+async def test_a_supervisor_rewrite_cannot_widen_an_immutable_selected_scope(env: Env) -> None:
     alpha_id = await _seed_document(env, "alpha")
     beta_id = await _seed_document(env, "betaexclusive")
     conversation_id = await _create_conversation(env, document_ids=[alpha_id])
     assert (await _submit(env, conversation_id, content="alpha")).status_code == 201
-    resolver = FakeContextualResolver(standalone_query="betaexclusive")
-    env.app.dependency_overrides[get_contextual_resolver] = lambda: resolver
+    supervisor = OfflineSupervisor(rewrite_to="betaexclusive")
+    env.app.dependency_overrides[get_supervisor] = lambda: supervisor
 
     response = await _submit(env, conversation_id, content="What about the other topic?")
 

@@ -131,15 +131,15 @@ def _retrieval_kind(outcome: QueryOutcome) -> MessageKind:
     provider simply down? Only the last is an incident.
 
     Order matters. A rejected draft is checked before evidence sufficiency,
-    because a turn that got far enough to generate had evidence the grader was
-    content with - the failure was in the output, not the sources.
+    because a turn that got far enough to generate had sources the supervisor
+    was content with - the failure was in the output, not in what was found.
     """
     if not outcome.hits:
         return MessageKind.NO_SOURCES
     verdict = outcome.output_verdict
     if verdict is not None and not verdict.passed:
         return MessageKind.REFUSAL if verdict.security_failure else MessageKind.ANSWER_REJECTED
-    if outcome.evidence is not None and not outcome.evidence.sufficient:
+    if outcome.evidence_sufficient is False:
         return MessageKind.UNSUPPORTED_EVIDENCE
     return MessageKind.GENERATION_UNAVAILABLE
 
@@ -212,7 +212,7 @@ class ConversationService:
             id=uuid7(),
             workspace_id=workspace_id,
             created_by=actor.id,
-            title= selected[0].filename if len(selected) == 1 else DEFAULT_CONVERSATION_TITLE,
+            title=selected[0].title if len(selected) == 1 else DEFAULT_CONVERSATION_TITLE,
             scope_mode=data.scope_mode,
         )
         self.repository.add(conversation)

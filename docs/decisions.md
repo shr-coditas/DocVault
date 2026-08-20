@@ -836,3 +836,50 @@ Short notes on non-obvious choices. Newest at the bottom.
   a rejected draft outranks the evidence verdict when the kind is chosen. Only
   the flagged agent path writes either value; existing rows and behaviour are
   untouched.
+
+## 2026-08-20 - one supervisor instead of four bounded decisions
+
+Slices 6B-6E grew a decision per concern: an analyzer, a planner, a grader and
+an output validator, each with a `Protocol`, a structured implementation, a
+deterministic fallback, a `Fallback*`/`Layered*` wrapper and a cached factory,
+all wired into an eleven-node graph through a runtime object carrying ten
+optional dependencies. Every one of those seams was individually defensible and
+the sum was not: four billed calls for one question, four places to look when a
+turn went wrong, and roughly half the code existing to describe how the other
+half could be swapped out. This branch replaces it with a supervisor.
+
+- **One node decides, and it is the only node that asks a model.** `screen`,
+  `retrieve`, `write` and `respond` are deterministic; `supervise` reads the
+  conversation, the question and the excerpts found so far and returns one of
+  five actions. It is asked again after each step, so what the analyzer, the
+  planner and the grader used to decide separately is now one decision with one
+  log line and one prompt to iterate on.
+- **Safety stays out of the model's hands entirely.** The deterministic screen -
+  guardrail chain, injection patterns, greeting and out-of-scope rules, revoked
+  conversation scope - runs before the supervisor and ends the turn on its own.
+  The supervisor may *decline* a message it reads as off-topic; it can never be
+  argued into allowing one of these, because it never sees them. The layered
+  analyzer's model-side safety verdict is gone with it: the regex rules and the
+  output checks are what remain, and that is the honest trade.
+- **Chat history is graph state, not a step.** The conversation enters as
+  `messages` under the `add_messages` reducer, and the supervisor reads it on
+  every pass to keep a follow-up resolved. That retires the separate contextual
+  resolver on this path - resolving a reference and deciding what to search for
+  were always the same judgement, split across two calls only because they were
+  built in different weeks. The conversation layer still resolves scope and
+  access-safe history before the graph starts, because that work is
+  authorization and belongs to the layer holding the session.
+- **Budgets are configuration; the supervisor is clamped to them.** It can ask
+  for another search or another draft and never for a larger allowance:
+  `agent_max_searches` and `agent_max_drafts` bound the loop, a search repeating
+  a wording already tried is dropped rather than run, and `agent_max_steps` is a
+  startup-checked backstop rather than the bound. Eleven agent settings became
+  seven.
+- **Degradation is one `except`, in one place.** A supervisor outage falls back
+  to what an unsupervised pipeline would have done - one search for what was
+  asked, then an answer over it - instead of a fallback class per decision.
+- **`QueryOutcome` records facts, not the machinery that produced them.**
+  `EvidenceGrade`, `QueryPlan`, `QueryAnalysis`, `QueryTask` and the safety enums
+  are gone; what the conversation ledger actually reads is `evidence_sufficient:
+  bool | None`, where None still means nobody judged. The five distinct silences
+  and all eleven message kinds are unchanged.

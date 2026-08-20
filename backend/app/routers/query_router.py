@@ -9,11 +9,8 @@ from app.dependencies import (
     ChatModelDep,
     DbSession,
     EmbedderDep,
-    EvidenceGraderDep,
-    OutputGuardrailDep,
-    QueryAnalyzerDep,
-    QueryPlannerDep,
     RerankerDep,
+    SupervisorDep,
     require_permission,
 )
 from app.models.user import User
@@ -30,10 +27,7 @@ def get_query_service(
     embedder: EmbedderDep,
     reranker: RerankerDep,
     model: ChatModelDep,
-    grader: EvidenceGraderDep,
-    analyzer: QueryAnalyzerDep,
-    planner: QueryPlannerDep,
-    output_guardrail: OutputGuardrailDep,
+    supervisor: SupervisorDep,
 ) -> QueryService:
     # SearchService is injected rather than reached for, so the intent gate can
     # be tested with a search double that records whether it was called at all.
@@ -42,10 +36,7 @@ def get_query_service(
     return QueryService(
         SearchService(db, embedder, reranker=reranker),
         answers=AnswerService(model),
-        grader=grader,
-        analyzer=analyzer,
-        planner=planner,
-        output_guardrail=output_guardrail,
+        supervisor=supervisor,
     )
 
 

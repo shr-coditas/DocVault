@@ -1,4 +1,11 @@
-"""The query pipeline: guardrails → intent → (only then) retrieval.
+"""Where a question enters the system, and which of the two paths it takes.
+
+The supervised graph in ``app.ai.agent`` answers by default. This module still
+owns the linear pipeline it grew out of, and falls back to it when there is no
+supervisor or no answerer to run the graph with - a deployment without a
+provider key still guards, classifies, retrieves and returns passages.
+
+The linear pipeline, which is also the shape of the graph's deterministic gate:
 
     guardrail chain      cheap, mechanical. Fails → BLOCK, nothing else runs.
     intent classifier    what the query is. No I/O, no model, no database.
@@ -33,6 +40,7 @@ from collections.abc import Awaitable, Callable
 import structlog
 
 from app.ai import prompts
+from app.ai.agent.supervisor import Supervisor
 from app.config import Settings, get_settings
 from app.models.user import User
 from app.services.ai_types import (
@@ -52,34 +60,20 @@ from app.services.contextual_query_service import (
     ContextualQueryResolver,
     ResolverUnavailableError,
 )
-from app.services.evidence_grading_service import EvidenceGrader
 from app.services.guardrail_service import GuardrailService
 from app.services.intent_service import IntentClassifier, RuleBasedIntentClassifier
-from app.services.output_guardrail_service import OutputGuardrail
-from app.services.query_analysis_service import QueryAnalyzer
-from app.services.query_planning_service import QueryPlanner
 from app.services.search_service import SearchService
 
 logger = structlog.stdlib.get_logger("docvault.query")
 
-# Fixed sentences, not templates. Nothing the caller typed is echoed back: an
-# error message that repeats user input is how a refusal becomes a reflection
-# gadget, and there is no reason a refusal needs to quote the thing refused.
-DECLINE_MESSAGE = (
-    "DocVault answers questions about the documents in this workspace. "
-    "That request is outside what it can help with."
-)
-BLOCK_MESSAGE = "That request was refused."
-CHITCHAT_MESSAGE = (
-    "Hello. Ask a question about the documents in this workspace and I will look them up."
-)
-CLARIFICATION_MESSAGE = (
-    "I need a little more detail to know which document, topic, or earlier answer you mean."
-)
-SCOPE_UNAVAILABLE_MESSAGE = (
-    "That question cannot be answered because the required conversation documents "
-    "are no longer available to you."
-)
+# The fixed refusal sentences live in `app.ai.prompts` with the rest of the
+# user-facing text; they are re-exported here because this module was where they
+# used to be, and callers still import them from it.
+DECLINE_MESSAGE = prompts.DECLINE_MESSAGE
+BLOCK_MESSAGE = prompts.BLOCK_MESSAGE
+CHITCHAT_MESSAGE = prompts.CHITCHAT_MESSAGE
+CLARIFICATION_MESSAGE = prompts.CLARIFICATION_MESSAGE
+SCOPE_UNAVAILABLE_MESSAGE = prompts.SCOPE_UNAVAILABLE_MESSAGE
 
 QueryContextLoader = Callable[[], Awaitable[QueryExecutionContext]]
 
@@ -113,10 +107,7 @@ class QueryService:
         classifier: IntentClassifier | None = None,
         answers: AnswerService | None = None,
         resolver: ContextualQueryResolver | None = None,
-        grader: EvidenceGrader | None = None,
-        analyzer: QueryAnalyzer | None = None,
-        planner: QueryPlanner | None = None,
-        output_guardrail: OutputGuardrail | None = None,
+        supervisor: Supervisor | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
@@ -129,14 +120,9 @@ class QueryService:
         # rather than an outage.
         self.answers = answers
         self.resolver = resolver
-        # Graph-only, and each optional there too. The legacy path never grades,
-        # plans, analyzes or validates output, so these on a deployment with
-        # `agent_enabled` off are simply unused - the two paths stay comparable
-        # rather than quietly diverging.
-        self.grader = grader
-        self.analyzer = analyzer
-        self.planner = planner
-        self.output_guardrail = output_guardrail
+        # Used only by the graph. The linear pipeline needs no supervision: it
+        # searches once and generates once, and there is nothing to decide.
+        self.supervisor = supervisor
 
     async def handle(
         self,
@@ -151,8 +137,14 @@ class QueryService:
         document_ids: list[uuid.UUID] | None = None,
         context_loader: QueryContextLoader | None = None,
     ) -> QueryOutcome:
-        """Run the legacy pipeline or its feature-flagged graph equivalent."""
-        if not self.settings.agent_enabled:
+        """Run the supervised graph, or the linear pipeline it replaced.
+
+        The graph needs both a supervisor to decide and an answerer to write,
+        and a deployment can be missing either. Falling back rather than failing
+        keeps a workspace with no provider key usable: it still guards,
+        classifies, retrieves, and hands back the passages it found.
+        """
+        if not self.settings.agent_enabled or self.supervisor is None or self.answers is None:
             return await self._handle_legacy(
                 actor,
                 workspace_id,
@@ -165,43 +157,40 @@ class QueryService:
                 context_loader=context_loader,
             )
 
-        # Imported only when the rollout flag is on. API startup and the legacy
-        # path do not need to construct or even import the graph runtime.
-        from app.ai.query_graph import QueryGraphRuntime, QueryGraphScope, run_query_graph
+        # Imported here so that API startup, and every request on the linear
+        # path, gets nowhere near LangGraph.
+        from app.ai.agent import AgentContext, run_query_graph
 
-        runtime = QueryGraphRuntime(
-            actor=actor,
-            workspace_id=workspace_id,
-            search=self.search,
-            guardrails=self.guardrails,
-            classifier=self.classifier,
-            answers=self.answers,
-            resolver=self.resolver,
-            scope=QueryGraphScope.from_request(document_id, document_ids),
-            decisions=_DECISIONS,
-            messages=_MESSAGES,
-            context_loader=context_loader,
-            limit=limit,
-            semantic_min_score=semantic_min_score,
-            mode=mode,
-            grader=self.grader,
-            # Both settings bound the same loop from different directions, and a
-            # rewrite is what buys each extra attempt: `validate_agent_attempt_limits`
-            # keeps rewrites below attempts, so the lower of the two governs.
-            max_retrieval_attempts=min(
-                self.settings.agent_max_retrieval_attempts,
-                self.settings.agent_max_rewrites + 1,
-            ),
-            analyzer=self.analyzer,
-            planner=self.planner,
-            max_subqueries=self.settings.agent_max_subqueries,
-            output_guardrail=self.output_guardrail,
-            max_generation_attempts=self.settings.agent_max_generation_attempts,
+        # The conversation's scope and history are resolved before the graph
+        # starts rather than inside it. History is state, not a step, and the
+        # authorization work behind it - which pinned documents this actor can
+        # still open, which earlier turns cited only documents they can still
+        # read - belongs to the layer that owns the session, not to a node a
+        # model can route around.
+        context = QueryExecutionContext(
+            document_ids=tuple(document_ids) if document_ids is not None else None
         )
+        if context_loader is not None:
+            context = await context_loader()
+            document_id = None
+
         return await run_query_graph(
             query,
-            runtime,
-            recursion_limit=self.settings.agent_max_total_steps,
+            context.history,
+            AgentContext(
+                actor=actor,
+                workspace_id=workspace_id,
+                search=self.search,
+                answers=self.answers,
+                supervisor=self.supervisor,
+                settings=self.settings,
+                document_ids=context.document_ids,
+                unavailable_documents=context.unavailable_documents,
+                document_id=document_id,
+                limit=limit,
+                semantic_min_score=semantic_min_score,
+                mode=mode,
+            ),
         )
 
     async def _handle_legacy(

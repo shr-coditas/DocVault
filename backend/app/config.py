@@ -88,19 +88,23 @@ class Settings(BaseSettings):
     resolver_history_token_budget: int = 1500
 
     # -- agent ----------------------------------------------------------
-    agent_enabled: bool = True #use langgraph to answer user queries
+    # The supervised graph. Off means the linear pipeline answers instead:
+    # guardrail, classify, one search, one generation.
+    agent_enabled: bool = True
+    # Falls back to the answering model when unset. Kept separable because the
+    # supervisor wants a fast model with reliable structured output, and the
+    # answerer wants a good writer - not always the same choice.
     agent_model_provider: str | None = None
     agent_model: str | None = None
-    agent_structured_max_output_tokens: int = Field(default=1000, ge=128, le=4096)
-    agent_analysis_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
-    agent_planning_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
-    agent_evidence_grading_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
-    agent_max_retrieval_attempts: int = Field(default=2, ge=1, le=3)
-    agent_max_rewrites: int = Field(default=1, ge=0, le=2)
-    agent_max_subqueries: int = Field(default=3, ge=1, le=3)
-    agent_max_generation_attempts: int = Field(default=2, ge=1, le=3)
-    agent_max_total_steps: int = Field(default=18, ge=10, le=32)
-    agent_checkpoint_retention_hours: int = Field(default=24, ge=1, le=168)
+    agent_max_output_tokens: int = Field(default=1000, ge=128, le=4096)
+    agent_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    # Rounds, not queries: one decision to search costs one, whether it named
+    # one wording or three. The supervisor is clamped to these; it can ask for
+    # another pass and never for a larger allowance.
+    agent_max_searches: int = Field(default=3, ge=1, le=5)
+    agent_max_drafts: int = Field(default=2, ge=1, le=3)
+    # A backstop, not the bound - see `validate_agent_step_budget`.
+    agent_max_steps: int = Field(default=16, ge=6, le=32)
     agent_output_prompt_overlap_chars: int = Field(default=80, ge=40, le=500)
     agent_output_source_overlap_chars: int = Field(default=300, ge=100, le=2000)
 
@@ -113,26 +117,21 @@ class Settings(BaseSettings):
     google_studio_api_key: str | None = None
 
     @model_validator(mode="after")
-    def validate_agent_attempt_limits(self) -> "Settings":
-        if self.agent_max_rewrites >= self.agent_max_retrieval_attempts:
-            raise ValueError("agent_max_rewrites must be lower than agent_max_retrieval_attempts")
+    def validate_agent_step_budget(self) -> "Settings":
+        """Keep the graph's recursion limit ahead of the budgets it has to serve.
 
-        # `agent_max_total_steps` becomes the graph's recursion limit, and the
-        # corrective-retrieval loop adds nodes per attempt. Left unchecked, a
-        # raised retry budget turns into GraphRecursionError on a live request;
-        # refusing at startup makes it a configuration error instead.
-        attempts = min(self.agent_max_retrieval_attempts, self.agent_max_rewrites + 1)
-        generations = self.agent_max_generation_attempts
-        # Each node execution is one LangGraph superstep, so the worst-case path
-        # is counted node by node: guard, analyze, load_context, resolve_context,
-        # plan and finalize run once each; retrieve + grade run per retrieval
-        # attempt with one rewrite between attempts; generate + validate run per
-        # generation attempt.
-        required_steps = 6 + 2 * attempts + (attempts - 1) + 2 * generations
-        if self.agent_max_total_steps < required_steps:
+        Every node execution is one LangGraph superstep. The longest legal path
+        is screen, then a supervise/retrieve pair per search, then a
+        supervise/write pair per draft, then respond - so a raised search budget
+        with an unchanged step limit would surface as a GraphRecursionError on a
+        live request. Refusing at startup makes it a configuration error, which
+        is the kind of failure someone can act on.
+        """
+        required = 2 + 2 * self.agent_max_searches + 2 * self.agent_max_drafts
+        if self.agent_max_steps < required:
             raise ValueError(
-                f"agent_max_total_steps must be at least {required_steps} "
-                f"for {attempts} retrieval attempts and {generations} generation attempts"
+                f"agent_max_steps must be at least {required} for "
+                f"{self.agent_max_searches} searches and {self.agent_max_drafts} drafts"
             )
         return self
 

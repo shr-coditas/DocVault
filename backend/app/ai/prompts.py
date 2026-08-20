@@ -176,3 +176,29 @@ REJECTED_ANSWER_MESSAGE = (
     "I could not produce an answer that stayed grounded in the sources. The "
     "matching passages are listed below so you can read them directly."
 )
+
+
+# Fixed sentences for every ending that is not an answer, kept here beside the
+# rest of the user-facing text rather than in the service that happened to need
+# them first. None is a template: nothing the caller typed is echoed back, since
+# a refusal that quotes what it refused is how a refusal becomes a reflection
+# gadget.
+DECLINE_MESSAGE = (
+    "DocVault answers questions about the documents in this workspace. "
+    "That request is outside what it can help with."
+)
+
+BLOCK_MESSAGE = "That request was refused."
+
+CHITCHAT_MESSAGE = (
+    "Hello. Ask a question about the documents in this workspace and I will look them up."
+)
+
+CLARIFICATION_MESSAGE = (
+    "I need a little more detail to know which document, topic, or earlier answer you mean."
+)
+
+SCOPE_UNAVAILABLE_MESSAGE = (
+    "That question cannot be answered because the required conversation documents "
+    "are no longer available to you."
+)
