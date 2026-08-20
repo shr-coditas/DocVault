@@ -1,18 +1,3 @@
-"""The agent: what a turn remembers, what it is allowed to touch, and the six
-functions that move it along.
-
-    guard      is this message usable at all?          deterministic
-    classify   what is it, and is the scope still there?  deterministic
-    supervise  what should we do next?                  the one model call
-    retrieve   run the searches it asked for
-    write      draft over the sources, check the draft
-    respond    assemble the outcome
-
-Every node returns a plain dict of state updates. The ones that pick a branch
-also set ``next_step``, and ``graph_manager`` turns that into the edges - so the
-shape of the graph is in one file and the work is in this one.
-"""
-
 import asyncio
 import uuid
 from collections.abc import Sequence
@@ -77,13 +62,12 @@ NON_RETRIEVAL_MESSAGES: dict[QueryDecision, str | None] = {
 
 
 @dataclass(slots=True)
-class AgentContext:
-    """
-    LangGraph hands this to every node as ``runtime.context``. It is deliberately
-    not graph state: state is what the supervisor reads and writes, and the
-    supervisor must not be able to change who is asking or which documents are
-    within reach. A rewritten search can look elsewhere in what this actor may
-    already read, and nowhere else.
+class Context:
+    """Request-scoped services and the scope this turn may read.
+
+    LangGraph requires this to be a dataclass, a TypedDict or a Pydantic model -
+    it is what `context_schema` validates against - and the decorator is also
+    what gives it an `__init__` at all.
     """
 
     actor: User
@@ -138,15 +122,11 @@ class State(TypedDict):
     outcome: NotRequired[QueryOutcome]
 
 
-async def guard(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
-    """Is this message usable at all?
-
-    Empty, oversized, or carrying zero-width characters - a few microseconds of
-    string work, and the cheapest possible place to say no. A caller hammering
-    junk is refused here at regex cost rather than at inference cost.
-    """
+async def guard(state: State, runtime: Runtime[Context]) -> dict[str, object]:
     context = runtime.context
-    question = str(state["messages"][-1].content)
+    question = str(
+        state["messages"][-1].content
+    )  # last message is the new question, which is what the guardrail service checks
     guardrails = await GuardrailService(settings=context.settings).run(question)
     if guardrails.passed:
         return {"question": question, "guardrails": guardrails, "next_step": "classify"}
@@ -166,7 +146,7 @@ async def guard(state: State, runtime: Runtime[AgentContext]) -> dict[str, objec
     }
 
 
-async def classify(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
+async def classify(state: State, runtime: Runtime[Context]) -> dict[str, object]:
     """What is this message, and can this conversation still answer it?
 
     Both questions are settled from rules, before the supervisor sees anything.
@@ -202,7 +182,7 @@ async def classify(state: State, runtime: Runtime[AgentContext]) -> dict[str, ob
     return {**update, "next_step": "supervise"}
 
 
-async def supervise(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
+async def supervise(state: State, runtime: Runtime[Context]) -> dict[str, object]:
     """Read the conversation and what has been found, and pick the next step.
 
     This runs once per pass around the loop, so a two-search turn asks three
@@ -222,7 +202,7 @@ async def supervise(state: State, runtime: Runtime[AgentContext]) -> dict[str, o
         question,
         # Everything before the message being answered. The supervisor uses it
         # only to resolve references; it is quoted data in the brief.
-        state["messages"][:-1],
+        state["messages"][:-1],  # but it doesn't have the chat history?
         sources,
         searches_run=searches_run,
         searches_left=searches_left,
@@ -291,7 +271,7 @@ async def supervise(state: State, runtime: Runtime[AgentContext]) -> dict[str, o
     return {**update, "unsupported": True, "next_step": "respond"}
 
 
-async def retrieve(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
+async def retrieve(state: State, runtime: Runtime[Context]) -> dict[str, object]:
     """Run the searches the supervisor asked for, then report back.
 
     They run one after another. A request-scoped ``AsyncSession`` cannot execute
@@ -322,7 +302,7 @@ async def retrieve(state: State, runtime: Runtime[AgentContext]) -> dict[str, ob
     }
 
 
-async def write(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
+async def write(state: State, runtime: Runtime[Context]) -> dict[str, object]:
     """Draft over the retrieved sources, check the raw text, then cite it.
 
     The order is the point. Citation resolution *drops* markers that point at no
@@ -395,7 +375,7 @@ async def write(state: State, runtime: Runtime[AgentContext]) -> dict[str, objec
     }
 
 
-async def respond(state: State, runtime: Runtime[AgentContext]) -> dict[str, object]:
+async def respond(state: State, runtime: Runtime[Context]) -> dict[str, object]:
     """Assemble the turn's outcome and say, once, what happened."""
     context = runtime.context
     decision = state["decision"]
@@ -450,7 +430,7 @@ async def respond(state: State, runtime: Runtime[AgentContext]) -> dict[str, obj
     }
 
 
-def _scope_failure(question: str, context: AgentContext) -> str | None:
+def _scope_failure(question: str, context: Context) -> str | None:
     """Whether this conversation's documents can still answer anything.
 
     An empty selection means every pinned document has been revoked or deleted:

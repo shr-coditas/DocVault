@@ -6,7 +6,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.runnables import Runnable
 
-from app.ai.agent.agent_manager import AgentContext
+from app.ai.agent.agent_manager import Context
 from app.ai.agent.graph_manager import get_graph
 from app.ai.agent.prompt_utils import Supervision
 from app.config import Settings
@@ -24,15 +24,15 @@ def build_supervisor(settings: Settings) -> Runnable[Any, Any]:
     """
     from langchain.chat_models import init_chat_model
 
-    provider = settings.agent_model_provider or settings.llm_provider
+    provider = settings.llm_provider
     credentials: dict[str, Any] = {}
     if provider == "google_genai" and settings.google_studio_api_key:
         credentials["api_key"] = settings.google_studio_api_key
-    if provider == "groq" and settings.groq_api_key:
-        credentials["api_key"] = settings.groq_api_key
+    # if provider == "groq" and settings.groq_api_key:
+    #     credentials["api_key"] = settings.groq_api_key
 
     model = init_chat_model(
-        model=settings.agent_model or settings.llm_model,
+        model=settings.llm_model,
         model_provider=provider,
         temperature=0,
         max_tokens=settings.agent_max_output_tokens,
@@ -58,7 +58,7 @@ def as_messages(history: Sequence[ConversationTurn]) -> list[AnyMessage]:
 async def run_workflow(
     question: str,
     history: Sequence[ConversationTurn],
-    context: AgentContext,
+    context: Context,
 ) -> QueryOutcome:
     """Run one query turn and return what to tell the caller.
 

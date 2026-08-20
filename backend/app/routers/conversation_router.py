@@ -38,7 +38,7 @@ def get_conversation_service(db: DbSession) -> ConversationService:
     return ConversationService(db)
 
 
-def get_conversation_turn_service(
+def get_conversation_turn_service( # why we need this function? why not use get_conversation_service directly?
     db: DbSession,
     embedder: EmbedderDep,
     reranker: RerankerDep,
@@ -136,7 +136,7 @@ async def submit_message(
     data: ConversationMessageCreate,
     response: Response,
     user: CanReadDocuments,
-    service: TurnServiceDep,
+    service: TurnServiceDep, # why so round round calls?
 ) -> ConversationTurnOut:
     """Persist before generation; return or resume the idempotent leased turn."""
     turn, created = await conversation_controller.submit_message(

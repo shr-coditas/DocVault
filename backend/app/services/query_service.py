@@ -160,7 +160,7 @@ class QueryService:
 
         # Imported here so that API startup, and every request on the linear
         # path, gets nowhere near LangGraph.
-        from app.ai.agent import AgentContext, run_workflow
+        from app.ai.agent import Context, run_workflow
 
         # The conversation's scope and history are resolved before the graph
         # starts rather than inside it. History is state, not a step, and the
@@ -178,7 +178,7 @@ class QueryService:
         return await run_workflow(
             query,
             context.history,
-            AgentContext(
+            Context(
                 actor=actor,
                 workspace_id=workspace_id,
                 search=self.search,
