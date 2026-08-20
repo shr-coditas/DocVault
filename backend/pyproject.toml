@@ -13,6 +13,7 @@ dependencies = [
     "langchain>=0.3",
     "langchain-google-genai>=4.3.2",
     "langchain-groq>=0.2",
+    "langgraph>=1.2.10,<2",
     "markdown-it-py>=3.0.0",
     "mdit-py-plugins>=0.4.2",
     "pgvector>=0.3.6",

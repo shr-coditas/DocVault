@@ -121,6 +121,29 @@ class _TurnClaim:
     created: bool
 
 
+def _retrieval_kind(outcome: QueryOutcome) -> MessageKind:
+    """Why a retrieving turn ends without an answer, recorded as it happened.
+
+    Five distinct events reach here and each gets its own kind, because a
+    history that flattens them is a history nobody can audit later: was the
+    workspace missing the document, were the passages too thin, did the model
+    write something unsafe, did it write something ungrounded, or was the
+    provider simply down? Only the last is an incident.
+
+    Order matters. A rejected draft is checked before evidence sufficiency,
+    because a turn that got far enough to generate had evidence the grader was
+    content with - the failure was in the output, not the sources.
+    """
+    if not outcome.hits:
+        return MessageKind.NO_SOURCES
+    verdict = outcome.output_verdict
+    if verdict is not None and not verdict.passed:
+        return MessageKind.REFUSAL if verdict.security_failure else MessageKind.ANSWER_REJECTED
+    if outcome.evidence is not None and not outcome.evidence.sufficient:
+        return MessageKind.UNSUPPORTED_EVIDENCE
+    return MessageKind.GENERATION_UNAVAILABLE
+
+
 @dataclass(frozen=True, slots=True)
 class _FinalTurn:
     status: MessageStatus
@@ -189,7 +212,7 @@ class ConversationService:
             id=uuid7(),
             workspace_id=workspace_id,
             created_by=actor.id,
-            title=DEFAULT_CONVERSATION_TITLE,
+            title= selected[0].filename if len(selected) == 1 else DEFAULT_CONVERSATION_TITLE,
             scope_mode=data.scope_mode,
         )
         self.repository.add(conversation)
@@ -553,9 +576,7 @@ class ConversationService:
             )
 
         if outcome.decision is QueryDecision.RETRIEVE:
-            kind = (
-                MessageKind.NO_SOURCES if not outcome.hits else MessageKind.GENERATION_UNAVAILABLE
-            )
+            kind = _retrieval_kind(outcome)
         elif outcome.decision is QueryDecision.BLOCK:
             kind = MessageKind.REFUSAL
         elif outcome.decision is QueryDecision.DECLINE:

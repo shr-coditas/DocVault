@@ -17,16 +17,32 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.ai import prompts
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.db.base import Base
 from app.db.session import get_db
-from app.dependencies import get_chat_model, get_embedder, get_reranker, get_storage_service
+from app.dependencies import (
+    get_chat_model,
+    get_embedder,
+    get_output_guardrail,
+    get_query_analyzer,
+    get_query_planner,
+    get_reranker,
+    get_storage_service,
+)
 from app.main import create_app
 from app.repository.document_repository import DocumentRepository
 from app.services.indexing_service import IndexingService
+from app.services.output_guardrail_service import DeterministicOutputGuardrail
+from app.services.query_planning_service import DirectQueryPlanner
 from app.services.query_service import BLOCK_MESSAGE, DECLINE_MESSAGE
 from app.services.storage_service import StorageService
-from tests.fakes import FakeChatModel, FakeEmbedder, FakeReranker, UnavailableChatModel
+from tests.fakes import (
+    FakeChatModel,
+    FakeEmbedder,
+    FakeReranker,
+    UnavailableChatModel,
+    offline_query_analyzer,
+)
 from tests.helpers import (
     WORKSPACES,
     add_member,
@@ -77,6 +93,12 @@ async def env(postgres_url: str, test_storage: StorageService) -> AsyncIterator[
     app.dependency_overrides[get_embedder] = lambda: embedder
     app.dependency_overrides[get_reranker] = FakeReranker
     app.dependency_overrides[get_chat_model] = lambda: model
+    # The agent seams are provider-backed by default; the graph-path tests set
+    # `agent_enabled`, so pin them to offline deterministic components exactly as
+    # the chat model is pinned. Legacy-path tests never consult them.
+    app.dependency_overrides[get_query_analyzer] = offline_query_analyzer
+    app.dependency_overrides[get_query_planner] = DirectQueryPlanner
+    app.dependency_overrides[get_output_guardrail] = DeterministicOutputGuardrail
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         owner = await signup(client, "owner@example.com")
@@ -306,6 +328,47 @@ async def test_the_gate_does_not_bypass_document_visibility(env: Env) -> None:
     assert body["hits"] == []
     # ...while the document owner retrieves it with the same question
     assert (await _query(env, "payroll", semantic_min_score=0.1))["hits"]
+
+
+async def test_graph_path_preserves_permission_filtered_retrieval(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rollout flag changes orchestration, never the search authorization."""
+    monkeypatch.setenv("AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        document_id = await _seed(env, "graph-payroll")
+        viewer = await signup(env.client, "graph-viewer@example.com")
+        added = await add_member(
+            env.client,
+            env.owner,
+            env.workspace_id,
+            "graph-viewer@example.com",
+            "viewer",
+        )
+        assert added.status_code == 201, added.text
+        restricted = await env.client.put(
+            f"{WORKSPACES}/{env.workspace_id}/documents/{document_id}/visibility",
+            json={"visibility": "restricted"},
+            headers=env.owner,
+        )
+        assert restricted.status_code == 200
+
+        body = await _query(
+            env,
+            "graph-payroll",
+            headers=viewer,
+            semantic_min_score=-1,
+        )
+
+        assert get_settings().agent_enabled is True
+        assert body["decision"] == "retrieve"
+        assert body["retrieval_performed"] is True
+        assert body["hits"] == []
+        assert env.embedder.embedded_queries == ["graph-payroll"]
+        assert env.model.calls == 0
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_non_member_gets_404(env: Env) -> None:

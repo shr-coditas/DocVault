@@ -39,7 +39,7 @@ model's instructions live.
 
 from collections.abc import Sequence
 
-from app.services.ai_types import SearchHit
+from app.services.ai_types import OutputIssue, SearchHit
 
 SYSTEM_PROMPT = """\
 You are DocVault's document assistant. You answer questions using only the \
@@ -91,20 +91,57 @@ def format_sources(hits: Sequence[SearchHit]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_user_prompt(question: str, hits: Sequence[SearchHit]) -> str:
+def build_user_prompt(
+    question: str,
+    hits: Sequence[SearchHit],
+    guidance: str | None = None,
+) -> str:
     """Assemble the turn: sources first, then the question.
 
     Question last is deliberate. It is the part that changes on every request,
     so keeping it after the sources leaves the largest possible shared prefix at
     the front - which is what a provider's prompt cache can reuse, and what
     keeps the model's attention on the instruction it must follow most recently.
+
+    ``guidance`` is the 6E regeneration hint, appended last so it is the final
+    thing read. It is always one of the fixed sentences below - the rejected
+    draft itself is never quoted back, because feeding unvalidated output into
+    the next prompt is how a single bad generation becomes a persistent one.
     """
-    return (
+    prompt = (
         "===== BEGIN SOURCES =====\n"
         f"{format_sources(hits)}\n"
         "===== END SOURCES =====\n\n"
         f"Question: {question.strip()}"
     )
+    return f"{prompt}\n\n{guidance}" if guidance else prompt
+
+
+# Fixed corrective sentences keyed by what the output checks actually found.
+# Regeneration is only worth its billed call if the second attempt is told what
+# went wrong: generation runs at a low temperature, so an identical prompt would
+# mostly buy an identical draft and a second identical rejection.
+_RETRY_GUIDANCE: dict[OutputIssue, str] = {
+    OutputIssue.MISSING_CITATIONS: (
+        "Your previous attempt stated facts without citing them. Cite the "
+        "supporting source for every factual sentence, using the bracketed "
+        "numbers above."
+    ),
+    OutputIssue.UNRESOLVABLE_CITATIONS: (
+        "Your previous attempt cited a source number that was not supplied. Use "
+        "only the bracketed numbers shown above, and cite nothing else."
+    ),
+    OutputIssue.EXCESSIVE_SOURCE_COPY: (
+        "Your previous attempt reproduced a long passage verbatim. Answer in "
+        "your own words, quoting at most a short phrase, and cite the source."
+    ),
+}
+
+
+def build_retry_guidance(issues: Sequence[OutputIssue]) -> str | None:
+    """The corrective sentences for one rejected draft, in a stable order."""
+    sentences = [_RETRY_GUIDANCE[issue] for issue in _RETRY_GUIDANCE if issue in frozenset(issues)]
+    return " ".join(sentences) if sentences else None
 
 
 NO_SOURCES_MESSAGE = (
@@ -115,4 +152,27 @@ NO_SOURCES_MESSAGE = (
 GENERATION_UNAVAILABLE_MESSAGE = (
     "The answer service is unavailable right now, so here are the passages that "
     "matched your question."
+)
+
+# Distinct from both silences above. The search worked and the provider is fine;
+# the passages simply do not support an answer. Saying so without calling the
+# model is the honest outcome - and asking the model to answer anyway is how a
+# thin retrieval turns into a confident, unsupported paragraph.
+UNSUPPORTED_EVIDENCE_MESSAGE = (
+    "I found related passages, but they do not contain enough to answer that "
+    "question. The matching sources are listed below."
+)
+
+# 6E. A draft was produced and then rejected by the output checks. Both messages
+# describe the outcome without describing the check: naming the rule that fired
+# would tell a caller probing the system exactly which wording to try next, and
+# the honest user-facing fact is simply that no answer is being shown.
+UNSAFE_OUTPUT_MESSAGE = (
+    "I could not produce a safe answer to that question. Nothing has been shown "
+    "from the draft that was generated."
+)
+
+REJECTED_ANSWER_MESSAGE = (
+    "I could not produce an answer that stayed grounded in the sources. The "
+    "matching passages are listed below so you can read them directly."
 )

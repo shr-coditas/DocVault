@@ -19,8 +19,24 @@ from app.services.contextual_query_service import (
     get_default_contextual_resolver,
 )
 from app.services.embedding_service import Embedder, get_default_embedder
+from app.services.evidence_grading_service import (
+    EvidenceGrader,
+    get_default_evidence_grader,
+)
 from app.services.llm_service import ChatModel, get_default_chat_model
+from app.services.output_guardrail_service import (
+    DeterministicOutputGuardrail,
+    OutputGuardrail,
+)
 from app.services.permission_service import PermissionService
+from app.services.query_analysis_service import (
+    QueryAnalyzer,
+    get_default_query_analyzer,
+)
+from app.services.query_planning_service import (
+    QueryPlanner,
+    get_default_query_planner,
+)
 from app.services.reranking_service import Reranker, get_default_reranker
 from app.services.storage_service import StorageService
 from app.utils.rbac_catalog import Perm
@@ -73,6 +89,54 @@ def get_contextual_resolver() -> ContextualQueryResolver:
 
 
 ContextualResolverDep = Annotated[ContextualQueryResolver, Depends(get_contextual_resolver)]
+
+
+def get_evidence_grader() -> EvidenceGrader:
+    """Corrective-retrieval grading seam (6C); its own override point.
+
+    Only the graph consults it, so a deployment with the rollout flag off builds
+    this object and never calls it. Construction stays free either way: the
+    structured model resolves its provider client on first use, not here.
+    """
+    return get_default_evidence_grader()
+
+
+EvidenceGraderDep = Annotated[EvidenceGrader, Depends(get_evidence_grader)]
+
+
+def get_query_analyzer() -> QueryAnalyzer:
+    """Structured safety/intent/task analysis seam (6D).
+
+    Layered rather than model-only: the returned analyzer answers a recognized
+    attack from the existing rules with no provider call at all, and falls back
+    to those same rules when the provider is unavailable.
+    """
+    return get_default_query_analyzer()
+
+
+QueryAnalyzerDep = Annotated[QueryAnalyzer, Depends(get_query_analyzer)]
+
+
+def get_query_planner() -> QueryPlanner:
+    """Bounded retrieval-planning seam (6D); graph-only, like the grader."""
+    return get_default_query_planner()
+
+
+QueryPlannerDep = Annotated[QueryPlanner, Depends(get_query_planner)]
+
+
+def get_output_guardrail() -> OutputGuardrail:
+    """Deterministic output checks (6E).
+
+    No provider and no network: these are regex, unicode-category and overlap
+    checks, so unlike the other agent seams this one cannot degrade. That is
+    deliberate - the last gate before a user sees generated text should not have
+    an outage mode that fails open.
+    """
+    return DeterministicOutputGuardrail()
+
+
+OutputGuardrailDep = Annotated[OutputGuardrail, Depends(get_output_guardrail)]
 
 _bearer = HTTPBearer(
     auto_error=False

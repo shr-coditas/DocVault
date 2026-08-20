@@ -37,6 +37,13 @@ class MessageKind(StrEnum):
     CLARIFICATION = "clarification"
     SCOPE_UNAVAILABLE = "scope_unavailable"
     ERROR = "error"
+    # Added in 6E. Both describe a turn that retrieved successfully and still
+    # shows no answer, and both previously had to borrow a kind that misreported
+    # why: `no_sources` claims nothing was found when passages were, and
+    # `generation_unavailable` blames a provider that answered fine or was never
+    # called. A history nobody can read honestly is not much of a ledger.
+    UNSUPPORTED_EVIDENCE = "unsupported_evidence"
+    ANSWER_REJECTED = "answer_rejected"
 
 
 def _sql_values(enum: type[StrEnum]) -> str:

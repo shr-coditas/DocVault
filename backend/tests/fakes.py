@@ -8,17 +8,32 @@ model, and a real embedding provider would make those assertions approximate.
 import math
 import zlib
 from collections.abc import Sequence
+from typing import TypeVar
+
+from pydantic import BaseModel
 
 from app.services.ai_types import (
     ContextReason,
     ContextResolution,
     ConversationTurn,
+    EvidenceGrade,
+    OutputVerdict,
+    QueryAnalysis,
+    QueryPlan,
+    QueryTask,
+    SearchHit,
 )
 from app.services.contextual_query_service import ResolverUnavailableError
 from app.services.llm_service import Completion, LLMUnavailableError
+from app.services.query_analysis_service import (
+    LayeredQueryAnalyzer,
+    StructuredQueryAnalyzer,
+)
 from app.services.reranking_service import IdentityReranker
+from app.services.structured_model_service import StructuredModelUnavailableError
 
 DIMENSIONS = 384
+StructuredOutput = TypeVar("StructuredOutput", bound=BaseModel)
 
 
 class FakeReranker(IdentityReranker):
@@ -150,6 +165,48 @@ class UnavailableChatModel:
         raise LLMUnavailableError(self.message)
 
 
+class FakeStructuredModel:
+    """Validated scripted outputs with exact prompt/schema call history."""
+
+    model_name = "fake-structured"
+
+    def __init__(self, *responses: BaseModel | dict[str, object]) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[str, str, type[BaseModel], float]] = []
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        schema: type[StructuredOutput],
+        *,
+        timeout_seconds: float,
+    ) -> StructuredOutput:
+        self.calls.append((system, user, schema, timeout_seconds))
+        if not self.responses:
+            raise AssertionError("no fake structured response remains")
+        response = self.responses.pop(0)
+        return schema.model_validate(response)
+
+
+class UnavailableStructuredModel:
+    model_name = "unavailable-structured"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        schema: type[StructuredOutput],
+        *,
+        timeout_seconds: float,
+    ) -> StructuredOutput:
+        self.calls += 1
+        raise StructuredModelUnavailableError("structured model unavailable")
+
+
 class FakeContextualResolver:
     """Scripted follow-up resolver with call history independent of generation."""
 
@@ -191,3 +248,141 @@ class UnavailableContextualResolver:
     ) -> ContextResolution:
         self.calls += 1
         raise ResolverUnavailableError("resolver unavailable")
+
+
+class FakeEvidenceGrader:
+    """Scripted sufficiency verdicts, one per graded attempt.
+
+    ``calls`` records the query and how many passages were judged, which is what
+    the corrective-retrieval tests assert on: that the second grading saw the
+    rewritten wording and the merged evidence, not the original pair.
+    """
+
+    def __init__(self, *grades: EvidenceGrade) -> None:
+        self.grades = list(grades)
+        self.calls: list[tuple[str, int]] = []
+
+    async def grade(
+        self,
+        query: str,
+        hits: Sequence[SearchHit],
+        plan: QueryPlan,
+    ) -> EvidenceGrade:
+        self.calls.append((query, len(hits)))
+        if not self.grades:
+            raise AssertionError("no fake evidence grade remains")
+        return self.grades.pop(0)
+
+
+class UnavailableEvidenceGrader:
+    """Every grading fails, to prove an ungraded query still gets its answer."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def grade(
+        self,
+        query: str,
+        hits: Sequence[SearchHit],
+        plan: QueryPlan,
+    ) -> EvidenceGrade:
+        self.calls += 1
+        raise StructuredModelUnavailableError("evidence grader unavailable")
+
+
+def offline_query_analyzer() -> LayeredQueryAnalyzer:
+    """A fully offline analyzer for the HTTP+DB graph-path tests.
+
+    Layered over an always-unavailable structured model, so every message is
+    decided by the same rule classifier the real analyzer already falls back to.
+    That keeps the database parity tests deterministic and network-free - the
+    ``FakeChatModel`` of query analysis - without asserting a specific scripted
+    verdict, since those tests care about orchestration, not classification.
+    """
+    return LayeredQueryAnalyzer(StructuredQueryAnalyzer(UnavailableStructuredModel()))
+
+
+class FakeQueryAnalyzer:
+    """Scripted safety/intent/task verdicts, with the messages it judged."""
+
+    def __init__(self, *analyses: QueryAnalysis) -> None:
+        self.analyses = list(analyses)
+        self.calls: list[str] = []
+
+    async def analyze(self, query: str) -> QueryAnalysis:
+        self.calls.append(query)
+        if not self.analyses:
+            raise AssertionError("no fake query analysis remains")
+        return self.analyses.pop(0)
+
+
+class UnavailableQueryAnalyzer:
+    """Analysis always fails, to prove the rule-based classifier still decides."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def analyze(self, query: str) -> QueryAnalysis:
+        self.calls += 1
+        raise StructuredModelUnavailableError("query analyzer unavailable")
+
+
+class FakeQueryPlanner:
+    """Scripted plans, recording the resolved query and task it planned from.
+
+    The recorded query is what the decomposition tests assert on: a plan must be
+    built from the *standalone* question, not the raw follow-up, or a decomposed
+    search would inherit the ambiguity contextual resolution just removed.
+    """
+
+    def __init__(self, *plans: QueryPlan) -> None:
+        self.plans = list(plans)
+        self.calls: list[tuple[str, QueryTask]] = []
+
+    async def plan(self, query: str, analysis: QueryAnalysis) -> QueryPlan:
+        self.calls.append((query, analysis.task))
+        if not self.plans:
+            raise AssertionError("no fake query plan remains")
+        return self.plans.pop(0)
+
+
+class UnavailableQueryPlanner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def plan(self, query: str, analysis: QueryAnalysis) -> QueryPlan:
+        self.calls += 1
+        raise StructuredModelUnavailableError("query planner unavailable")
+
+
+class RecordingOutputGuardrail:
+    """Scripted output verdicts that record exactly what they were shown.
+
+    ``drafts`` is the load-bearing part, the same way ``FakeChatModel.prompts``
+    is: it proves validation saw the raw generated text, markers and all, rather
+    than a version with the unresolvable citations already tidied away.
+    """
+
+    def __init__(self, *verdicts: OutputVerdict) -> None:
+        self.verdicts = list(verdicts)
+        self.drafts: list[str] = []
+        self.source_counts: list[int] = []
+        self.system_prompts: list[str] = []
+
+    @property
+    def calls(self) -> int:
+        return len(self.drafts)
+
+    async def validate(
+        self,
+        draft: str,
+        sources: Sequence[SearchHit],
+        *,
+        system_prompt: str,
+    ) -> OutputVerdict:
+        self.drafts.append(draft)
+        self.source_counts.append(len(sources))
+        self.system_prompts.append(system_prompt)
+        if not self.verdicts:
+            raise AssertionError("no fake output verdict remains")
+        return self.verdicts.pop(0)

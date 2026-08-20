@@ -700,3 +700,139 @@ Short notes on non-obvious choices. Newest at the bottom.
   startup or inside an Alembic transaction. Checkpoint connections are separate
   from application asyncpg sessions, and checkpoint state stores bounded control
   data/source references rather than credentials, prompts or raw document text.
+
+## 2026-08-14 (Slice 6A) - deterministic security around structured decisions
+
+- **Known attacks remain a zero-model decision.** The existing rule classifier
+  runs before the structured analyzer and blocks recognized prompt-injection or
+  exfiltration patterns without sending them to a provider. Analyzer outages fall
+  back to the same rule result so the graph cannot turn a model failure into a
+  workspace-wide query outage.
+- **Graph decisions use one provider-neutral structured-model seam.** Analysis,
+  retrieval planning, and evidence grading each expose a narrow domain protocol
+  and validated schema over a shared provider adapter. The prose answer model and
+  contextual resolver remain independent, with their own call accounting and
+  failure behavior.
+- **The planner never receives authorization state.** Its model input contains
+  only the resolved query and task, and hard application limits cap searches,
+  rewrites, retrieval attempts, generation attempts, total graph steps, timeouts,
+  and checkpoint retention. Actor, workspace, and immutable document scope stay
+  in trusted runtime context for the later graph nodes.
+- **Evidence references are positional, not model-authored identities.** The
+  grader sees only numbered excerpts already returned by the permission-filtered
+  search service. Code rejects unknown numbers and will resolve accepted numbers
+  back to authorized hits, so the model never invents or selects document UUIDs.
+- **Generated text is checked deterministically before delivery.** Prompt and
+  source copying use bounded exact normalized overlap windows; configuration or
+  hidden-control disclosure is a terminal security failure, while missing or
+  invalid citations and excessive copying are quality failures eligible for the
+  later single bounded regeneration.
+
+## 2026-08-18 - transient LangGraph parity before agentic behavior
+
+- **The first graph changes orchestration only.** It reproduces the current
+  guard, deterministic intent, authorized context resolution, retrieval,
+  generation and finalization behavior. The structured analyzer, planning,
+  evidence grading, rewrite, decomposition and regeneration contracts from 6A
+  remain unwired until parity is established independently of new behavior.
+- **Authorization is runtime context, not graph state.** Actor, workspace,
+  request parameters, the mutable access-safe conversation scope, context loader
+  and service instances are supplied in a fresh per-invocation runtime object.
+  Graph state contains only the raw/effective query, bounded control decisions,
+  transient hits/generation data and the terminal outcome, so a node or model
+  response cannot author or widen access scope.
+- **One compiled topology serves both query surfaces.** `QueryService` remains
+  the facade for stateless `/query` and durable conversation turns. A disabled
+  rollout flag selects the existing linear implementation or the process-cached
+  transient graph; routers, controllers, conversation leasing, public DTOs and
+  source finalization remain unaware of LangGraph.
+- **The legacy path stays until table-driven parity is proven.** The same cases
+  execute through both implementations and compare complete outcomes plus
+  search/model side effects. Database-backed cases separately prove that graph
+  execution preserves the existing permission-filtered retrieval and durable,
+  access-safe contextual follow-up behavior.
+- **This graph has no checkpoint or loop.** It has one forward path with fixed
+  conditional terminals and a hard recursion limit. Corrective retrieval,
+  decomposition, output regeneration, Postgres checkpoints and progress events
+  remain separate later slices so none can hide a parity regression.
+
+## 2026-08-18 - corrective retrieval behind the same rollout flag
+
+- **The grader is optional, and its absence is the parity path.** `QueryService`
+  and the graph runtime accept `grader=None`, in which case no grading, rewrite
+  or second retrieval happens and the graph behaves exactly as 6B did. The
+  legacy linear path never grades at all, so the two implementations stay
+  comparable and the flag still selects orchestration rather than behavior.
+- **The attempt budget is runtime-owned, never graph state.** A grade may ask
+  for another search; it can never raise its own allowance. `agent_max_rewrites`
+  and `agent_max_retrieval_attempts` bound the same loop from two directions and
+  the lower governs. Because the loop adds nodes per attempt, `Settings` now
+  refuses a retry budget that `agent_max_total_steps` cannot cover - a raised
+  limit is a startup error instead of a `GraphRecursionError` on a live request.
+- **A rewrite changes search wording and nothing else.** Actor, workspace and
+  the immutable document scope stay in trusted runtime context on every attempt,
+  so a corrective search may look elsewhere in what the actor already reads and
+  never wider. Retrying is skipped when the grader offers no suggestion or
+  repeats the current wording, so the loop cannot spend an attempt on nothing.
+- **Merged evidence keeps logical source identity, not chunk identity.** Both
+  attempts are unioned on `(document_id, index_generation, logical_key)` - the
+  key the message ledger already freezes - keeping each source's better score so
+  the corrective wording can improve a passage's rank. The union is truncated to
+  the caller's requested limit, so two attempts never hand the model twice the
+  passages one attempt would have.
+- **Graded-insufficient evidence is a terminal answer, not a generation.** After
+  the bound, unsupported evidence returns `UNSUPPORTED_EVIDENCE_MESSAGE` with
+  the retrieved passages and no model call: asking for prose the sources cannot
+  support is how thin retrieval becomes a confident wrong answer. `QueryOutcome`
+  carries the grade so this stays distinguishable from "found nothing" and from
+  a provider outage. The conversation ledger records it as `NO_SOURCES` rather
+  than `GENERATION_UNAVAILABLE`, which would blame a provider that was never
+  called; a dedicated message kind needs a `kind` check-constraint migration and
+  waits for 6E's output-rejection work.
+
+## 2026-08-18 - bounded decomposition and output validation (6D, 6E)
+
+- **The structured analyzer is layered, and safety is separate from intent.**
+  `analyze` runs the rule-based classifier first, so a recognised attack is
+  blocked with no model call at all; only an unrecognised message reaches the
+  structured analyzer, and a provider outage there degrades back to those same
+  rules. The analyzer returns a safety verdict independent of intent: an attempt
+  to extract the system prompt is often a perfectly document-shaped question, so
+  intent alone can never clear it. Anything other than an explicit `allow` -
+  `block` or `uncertain` - ends the turn as an injection block before retrieval.
+- **A plan carries search wording and required aspects, and no authorization.**
+  Planning runs after contextual resolution, because a follow-up cannot be
+  decomposed until it is standalone. A plan can name neither actor, workspace,
+  document nor filter: the scope those would target lives in trusted runtime
+  context and is applied by the retrieve node regardless of what the plan says.
+  Model-produced queries change wording, never what may be seen.
+- **Decomposition costs one retrieval attempt, not one per subquery.** The
+  planned searches run sequentially - a request-scoped `AsyncSession` cannot
+  execute parallel statements, so a parallel fan-out over the caller's session
+  would be a concurrency bug - and their results merge on the same logical
+  source key corrective retrieval uses. The corrective budget counts attempts,
+  so a comparison question is graded once over the merged evidence; a grader
+  rewrite then supersedes the plan for the single corrective search.
+- **Drafting and citation resolution are two steps so validation sees the raw
+  text.** Resolution drops any marker that points at no supplied source, so a
+  guardrail running after it would inspect a tidy bibliography and never learn
+  the model invented `[7]`. `AnswerService.draft` returns the text as written;
+  `validate` checks it; only then does `finalize_draft` resolve citations. The
+  non-graph `answer()` still runs all three in order, byte-identical to before.
+- **Security output failures are terminal; quality failures regenerate once.**
+  Prompt/configuration disclosure and hidden control characters end the turn
+  with a fixed refusal - a draft that tried to leak the prompt has forfeited its
+  turn. Missing, unresolvable or excessive-copy citations are quality problems
+  and earn exactly one more generation, bounded by `agent_max_generation_attempts`
+  and told which rule failed. The rejected draft is never quoted back into the
+  retry prompt, never persisted, and never logged - only its length is - so one
+  bad generation cannot become a durable one.
+- **Two new message kinds end the borrowing.** `unsupported_evidence` and
+  `answer_rejected` are added by an additive `kind` check-constraint migration,
+  so a retrieving turn that shows no answer records why it happened rather than
+  the nearest pre-existing kind: graded-thin evidence is no longer mislabelled
+  `no_sources`, and a rejected draft is no longer mislabelled a provider outage.
+  Getting as far as generating means the grader was content with the sources, so
+  a rejected draft outranks the evidence verdict when the kind is chosen. Only
+  the flagged agent path writes either value; existing rows and behaviour are
+  untouched.

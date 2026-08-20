@@ -14,9 +14,14 @@ Three jobs, in order:
 3. **Resolve citations.** Parse the bracketed markers the model wrote and map
    them back to the sources actually supplied, dropping any that do not resolve.
 
-What it deliberately does *not* do is retry, re-rank, or re-query. A grade-and-
-rewrite loop belongs in the graph-based slice where it can be measured; adding
-an unmeasured retry here would just multiply cost.
+Steps 2 and 3 are separately callable (``draft`` and ``finalize_draft``) so the
+graph can validate the raw text between them; ``answer`` runs all three in order
+and is what the non-graph path still calls.
+
+What it deliberately does *not* do is retry, re-rank, or re-query. The grade-and-
+rewrite loop and the single regeneration both live in the graph, where they are
+bounded by configuration and can be measured; an unmeasured retry here would
+just multiply cost.
 """
 
 import re
@@ -28,7 +33,9 @@ from app.ai import prompts
 from app.config import Settings, get_settings
 from app.services.ai_types import (
     AnswerAttempt,
+    AnswerDraft,
     Citation,
+    DraftAttempt,
     GeneratedAnswer,
     GenerationFailure,
     SearchHit,
@@ -58,22 +65,30 @@ class AnswerService:
         self.settings = settings or get_settings()
         self.tokens = token_counter or ConservativeGenerationTokenCounter()
 
-    async def answer(self, question: str, hits: Sequence[SearchHit]) -> AnswerAttempt:
-        """Generate a cited answer and report exactly which sources were supplied.
+    async def draft(
+        self,
+        question: str,
+        hits: Sequence[SearchHit],
+        *,
+        guidance: str | None = None,
+    ) -> DraftAttempt:
+        """Generate over the selected sources, leaving the markers as written.
 
-        Failure remains a value rather than an exception: a provider outage must
-        not discard successful retrieval, and the conversation ledger still
-        needs to record which passages were sent before the call failed.
+        Split out of ``answer`` for 6E. Citation resolution silently discards a
+        marker that resolves to nothing, so validation has to see the text
+        *before* that happens - an invented ``[7]`` is the signal, and resolving
+        first would erase it. Failure stays a value for the same reason it does
+        in ``answer``: a provider outage must not discard successful retrieval.
         """
         sources = tuple(self.select_sources(hits, question))
         if not sources:
             # Nothing grounded to say. Calling the model here would invite it to
             # answer from its own knowledge - the one thing the prompt forbids -
             # and bill us for the privilege.
-            return AnswerAttempt(None, failure=GenerationFailure.NO_SOURCES)
+            return DraftAttempt(None, failure=GenerationFailure.NO_SOURCES)
 
         system = prompts.SYSTEM_PROMPT
-        user = prompts.build_user_prompt(question, sources)
+        user = prompts.build_user_prompt(question, sources, guidance)
 
         try:
             completion = await self.model.complete(system, user)
@@ -85,30 +100,57 @@ class AnswerService:
                 failure_type=type(exc).__name__,
                 sources=len(sources),
             )
-            return AnswerAttempt(
+            return DraftAttempt(
                 None,
                 selected_sources=sources,
                 failure=GenerationFailure.PROVIDER_UNAVAILABLE,
             )
 
-        citations = self.resolve_citations(completion.text, sources)
-        logger.info(
-            "answer_generated",
-            model=completion.model,
-            sources=len(sources),
-            citations=len(citations),
-            input_tokens=completion.input_tokens,
-            output_tokens=completion.output_tokens,
-        )
-        return AnswerAttempt(
-            GeneratedAnswer(
+        return DraftAttempt(
+            AnswerDraft(
                 text=completion.text.strip(),
                 model=completion.model,
-                citations=citations,
                 input_tokens=completion.input_tokens,
                 output_tokens=completion.output_tokens,
             ),
             selected_sources=sources,
+        )
+
+    def finalize_draft(self, draft: AnswerDraft, sources: Sequence[SearchHit]) -> GeneratedAnswer:
+        """Resolve the markers a validated draft wrote into citable sources."""
+        citations = self.resolve_citations(draft.text, sources)
+        logger.info(
+            "answer_generated",
+            model=draft.model,
+            sources=len(sources),
+            citations=len(citations),
+            input_tokens=draft.input_tokens,
+            output_tokens=draft.output_tokens,
+        )
+        return GeneratedAnswer(
+            text=draft.text,
+            model=draft.model,
+            citations=citations,
+            input_tokens=draft.input_tokens,
+            output_tokens=draft.output_tokens,
+        )
+
+    async def answer(self, question: str, hits: Sequence[SearchHit]) -> AnswerAttempt:
+        """Generate a cited answer and report exactly which sources were supplied.
+
+        Draft then resolve, with no validation in between - which is precisely
+        the pre-6E behavior, and what the flag-off path still runs.
+        """
+        attempt = await self.draft(question, hits)
+        if attempt.draft is None:
+            return AnswerAttempt(
+                None,
+                selected_sources=attempt.selected_sources,
+                failure=attempt.failure,
+            )
+        return AnswerAttempt(
+            self.finalize_draft(attempt.draft, attempt.selected_sources),
+            selected_sources=attempt.selected_sources,
         )
 
     def select_sources(self, hits: Sequence[SearchHit], question: str = "") -> list[SearchHit]:

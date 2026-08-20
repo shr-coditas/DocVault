@@ -5,7 +5,17 @@ from fastapi import APIRouter, Depends
 
 from app.controller.query_controller import query_controller
 from app.controller.query_controller.dto.query_dto import QueryIn, QueryOut
-from app.dependencies import ChatModelDep, DbSession, EmbedderDep, RerankerDep, require_permission
+from app.dependencies import (
+    ChatModelDep,
+    DbSession,
+    EmbedderDep,
+    EvidenceGraderDep,
+    OutputGuardrailDep,
+    QueryAnalyzerDep,
+    QueryPlannerDep,
+    RerankerDep,
+    require_permission,
+)
 from app.models.user import User
 from app.services.answer_service import AnswerService
 from app.services.query_service import QueryService
@@ -16,14 +26,26 @@ router = APIRouter(prefix="/workspaces/{workspace_id}/query", tags=["query"])
 
 
 def get_query_service(
-    db: DbSession, embedder: EmbedderDep, reranker: RerankerDep, model: ChatModelDep
+    db: DbSession,
+    embedder: EmbedderDep,
+    reranker: RerankerDep,
+    model: ChatModelDep,
+    grader: EvidenceGraderDep,
+    analyzer: QueryAnalyzerDep,
+    planner: QueryPlannerDep,
+    output_guardrail: OutputGuardrailDep,
 ) -> QueryService:
     # SearchService is injected rather than reached for, so the intent gate can
     # be tested with a search double that records whether it was called at all.
     # AnswerService likewise: the ChatModel seam is what keeps the suite offline,
     # and it is the only way to assert *which* passages reached the model.
     return QueryService(
-        SearchService(db, embedder, reranker=reranker), answers=AnswerService(model)
+        SearchService(db, embedder, reranker=reranker),
+        answers=AnswerService(model),
+        grader=grader,
+        analyzer=analyzer,
+        planner=planner,
+        output_guardrail=output_guardrail,
     )
 
 

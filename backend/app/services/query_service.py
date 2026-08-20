@@ -33,6 +33,7 @@ from collections.abc import Awaitable, Callable
 import structlog
 
 from app.ai import prompts
+from app.config import Settings, get_settings
 from app.models.user import User
 from app.services.ai_types import (
     ContextReason,
@@ -51,8 +52,12 @@ from app.services.contextual_query_service import (
     ContextualQueryResolver,
     ResolverUnavailableError,
 )
+from app.services.evidence_grading_service import EvidenceGrader
 from app.services.guardrail_service import GuardrailService
 from app.services.intent_service import IntentClassifier, RuleBasedIntentClassifier
+from app.services.output_guardrail_service import OutputGuardrail
+from app.services.query_analysis_service import QueryAnalyzer
+from app.services.query_planning_service import QueryPlanner
 from app.services.search_service import SearchService
 
 logger = structlog.stdlib.get_logger("docvault.query")
@@ -108,9 +113,15 @@ class QueryService:
         classifier: IntentClassifier | None = None,
         answers: AnswerService | None = None,
         resolver: ContextualQueryResolver | None = None,
+        grader: EvidenceGrader | None = None,
+        analyzer: QueryAnalyzer | None = None,
+        planner: QueryPlanner | None = None,
+        output_guardrail: OutputGuardrail | None = None,
+        settings: Settings | None = None,
     ) -> None:
+        self.settings = settings or get_settings()
         self.search = search
-        self.guardrails = guardrails or GuardrailService()
+        self.guardrails = guardrails or GuardrailService(settings=self.settings)
         self.classifier = classifier or RuleBasedIntentClassifier()
         # Optional: with no answerer the pipeline still guards, classifies, and
         # retrieves - it just returns passages instead of prose. That is the
@@ -118,8 +129,82 @@ class QueryService:
         # rather than an outage.
         self.answers = answers
         self.resolver = resolver
+        # Graph-only, and each optional there too. The legacy path never grades,
+        # plans, analyzes or validates output, so these on a deployment with
+        # `agent_enabled` off are simply unused - the two paths stay comparable
+        # rather than quietly diverging.
+        self.grader = grader
+        self.analyzer = analyzer
+        self.planner = planner
+        self.output_guardrail = output_guardrail
 
     async def handle(
+        self,
+        actor: User,
+        workspace_id: uuid.UUID,
+        query: str,
+        *,
+        limit: int | None = None,
+        semantic_min_score: float | None = None,
+        mode: SearchMode = SearchMode.HYBRID,
+        document_id: uuid.UUID | None = None,
+        document_ids: list[uuid.UUID] | None = None,
+        context_loader: QueryContextLoader | None = None,
+    ) -> QueryOutcome:
+        """Run the legacy pipeline or its feature-flagged graph equivalent."""
+        if not self.settings.agent_enabled:
+            return await self._handle_legacy(
+                actor,
+                workspace_id,
+                query,
+                limit=limit,
+                semantic_min_score=semantic_min_score,
+                mode=mode,
+                document_id=document_id,
+                document_ids=document_ids,
+                context_loader=context_loader,
+            )
+
+        # Imported only when the rollout flag is on. API startup and the legacy
+        # path do not need to construct or even import the graph runtime.
+        from app.ai.query_graph import QueryGraphRuntime, QueryGraphScope, run_query_graph
+
+        runtime = QueryGraphRuntime(
+            actor=actor,
+            workspace_id=workspace_id,
+            search=self.search,
+            guardrails=self.guardrails,
+            classifier=self.classifier,
+            answers=self.answers,
+            resolver=self.resolver,
+            scope=QueryGraphScope.from_request(document_id, document_ids),
+            decisions=_DECISIONS,
+            messages=_MESSAGES,
+            context_loader=context_loader,
+            limit=limit,
+            semantic_min_score=semantic_min_score,
+            mode=mode,
+            grader=self.grader,
+            # Both settings bound the same loop from different directions, and a
+            # rewrite is what buys each extra attempt: `validate_agent_attempt_limits`
+            # keeps rewrites below attempts, so the lower of the two governs.
+            max_retrieval_attempts=min(
+                self.settings.agent_max_retrieval_attempts,
+                self.settings.agent_max_rewrites + 1,
+            ),
+            analyzer=self.analyzer,
+            planner=self.planner,
+            max_subqueries=self.settings.agent_max_subqueries,
+            output_guardrail=self.output_guardrail,
+            max_generation_attempts=self.settings.agent_max_generation_attempts,
+        )
+        return await run_query_graph(
+            query,
+            runtime,
+            recursion_limit=self.settings.agent_max_total_steps,
+        )
+
+    async def _handle_legacy(
         self,
         actor: User,
         workspace_id: uuid.UUID,
@@ -285,6 +370,10 @@ class QueryService:
             context_resolution=resolution,
             scope_degraded=context.scope_degraded,
             unavailable_documents=context.unavailable_documents,
+            # This path drafts at most once and never validates, so the count is
+            # simply whether the answerer was reached. Reported rather than left
+            # at zero so the two pipelines stay comparable field for field.
+            generation_attempts=1 if (self.answers is not None and result.hits) else 0,
         )
 
     @staticmethod

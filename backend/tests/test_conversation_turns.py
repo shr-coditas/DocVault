@@ -12,13 +12,18 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from uuid6 import uuid7
 
-from app.config import Settings
+from app.ai import prompts
+from app.config import Settings, get_settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.dependencies import (
     get_chat_model,
     get_contextual_resolver,
     get_embedder,
+    get_evidence_grader,
+    get_output_guardrail,
+    get_query_analyzer,
+    get_query_planner,
     get_reranker,
     get_storage_service,
 )
@@ -32,17 +37,23 @@ from app.models.conversation import (
 )
 from app.repository.conversation_repository import ConversationRepository
 from app.repository.document_repository import DocumentRepository
+from app.services.ai_types import EvidenceGrade
 from app.services.conversation_service import REDACTED_ANSWER_MESSAGE
+from app.services.evidence_grading_service import DeterministicEvidenceGrader
 from app.services.indexing_service import IndexingService
 from app.services.llm_service import Completion
+from app.services.output_guardrail_service import DeterministicOutputGuardrail
+from app.services.query_planning_service import DirectQueryPlanner
 from app.services.storage_service import StorageService
 from tests.fakes import (
     FakeChatModel,
     FakeContextualResolver,
     FakeEmbedder,
+    FakeEvidenceGrader,
     FakeReranker,
     UnavailableChatModel,
     UnavailableContextualResolver,
+    offline_query_analyzer,
 )
 from tests.helpers import (
     WORKSPACES,
@@ -151,6 +162,15 @@ async def env(postgres_url: str, test_storage: StorageService) -> AsyncIterator[
     app.dependency_overrides[get_reranker] = FakeReranker
     app.dependency_overrides[get_chat_model] = lambda: model
     app.dependency_overrides[get_contextual_resolver] = lambda: resolver
+    # Offline default that reproduces pre-6C behaviour (evidence is sufficient
+    # whenever anything was retrieved). Cases about the corrective loop override
+    # this again with a scripted grader.
+    app.dependency_overrides[get_evidence_grader] = DeterministicEvidenceGrader
+    # The 6D/6E seams are provider-backed by default; the graph-path turn tests
+    # set `agent_enabled`, so pin them offline exactly as the chat model is.
+    app.dependency_overrides[get_query_analyzer] = offline_query_analyzer
+    app.dependency_overrides[get_query_planner] = DirectQueryPlanner
+    app.dependency_overrides[get_output_guardrail] = DeterministicOutputGuardrail
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         owner = await signup(client, "turn-owner@example.com")
@@ -547,6 +567,86 @@ async def test_follow_up_uses_bounded_history_and_persists_only_the_resolved_que
         ).scalar_one()
         assert stored.content == "What about its risks?"
         assert stored.resolved_query == "football policy risks and requirements"
+
+
+async def test_graph_path_preserves_durable_contextual_follow_up(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persistent turns use the same graph without moving history into it."""
+    monkeypatch.setenv("AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        await _seed_document(env, "graph-football")
+        conversation_id = await _create_conversation(env)
+        first = await _submit(env, conversation_id, content="graph-football requirements")
+        assert first.status_code == 201
+
+        resolver = FakeContextualResolver(
+            standalone_query="graph-football policy risks and requirements"
+        )
+        env.app.dependency_overrides[get_contextual_resolver] = lambda: resolver
+        env.embedder.embedded_queries.clear()
+        follow_up = await _submit(env, conversation_id, content="What about its risks?")
+
+        assert get_settings().agent_enabled is True
+        assert follow_up.status_code == 201, follow_up.text
+        assert follow_up.json()["messages"][1]["kind"] == "answer"
+        assert env.embedder.embedded_queries == ["graph-football policy risks and requirements"]
+        assert len(resolver.calls) == 1
+        assert resolver.calls[0][0] == "What about its risks?"
+
+        async with env.session_factory() as session:
+            stored = (
+                await session.execute(
+                    select(ConversationMessage)
+                    .where(
+                        ConversationMessage.conversation_id == uuid.UUID(conversation_id),
+                        ConversationMessage.role == MessageRole.USER,
+                    )
+                    .order_by(ConversationMessage.sequence.desc())
+                    .limit(1)
+                )
+            ).scalar_one()
+            assert stored.content == "What about its risks?"
+            assert stored.resolved_query == "graph-football policy risks and requirements"
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_graded_unsupported_evidence_is_recorded_without_generating(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Weak evidence ends the turn honestly, not as a generation outage."""
+    monkeypatch.setenv("AGENT_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        await _seed_document(env, "graded-football")
+        conversation_id = await _create_conversation(env)
+        # No suggested wording, so the corrective loop has nothing to retry with
+        # and the verdict is final after the first attempt.
+        grader = FakeEvidenceGrader(EvidenceGrade(sufficient=False))
+        env.app.dependency_overrides[get_evidence_grader] = lambda: grader
+        calls_before = env.model.calls
+
+        response = await _submit(env, conversation_id, content="graded-football requirements")
+
+        assert response.status_code == 201, response.text
+        assistant = response.json()["messages"][1]
+        assert response.json()["status"] == "complete"
+        # UNSUPPORTED_EVIDENCE, its own kind since 6E: passages were found and
+        # graded as too thin, which is neither "nothing retrieved" (NO_SOURCES)
+        # nor a provider outage (GENERATION_UNAVAILABLE). Before the kind
+        # migration this had to borrow NO_SOURCES and misreport the reason.
+        assert assistant["kind"] == MessageKind.UNSUPPORTED_EVIDENCE.value
+        assert assistant["content"] == prompts.UNSUPPORTED_EVIDENCE_MESSAGE
+        assert env.model.calls == calls_before
+        assert len(grader.calls) == 1
+        # The near-miss passages are still recorded; none reached the model.
+        assert assistant["sources"]
+        assert all(not source["supplied_to_model"] for source in assistant["sources"])
+        assert assistant["context_eligible"] is False
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_ambiguous_follow_up_clarifies_without_retrieval_or_generation(env: Env) -> None:
