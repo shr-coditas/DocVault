@@ -1,4 +1,3 @@
-import hashlib
 import mimetypes
 import uuid
 from collections.abc import AsyncIterator
@@ -53,7 +52,7 @@ class DocumentService:
 
         file_name = upload.filename or "file"
         self._require_supported_type(file_name)
-        data, size, checksum = await self._read_capped(upload)
+        data, size = await self._read_capped(upload)
         mime_type = mimetypes.guess_type(file_name)[0] or upload.content_type or DEFAULT_MIME
 
         document_id = uuid7()
@@ -67,7 +66,6 @@ class DocumentService:
             file_name=file_name,
             mime_type=mime_type,
             size_bytes=size,
-            checksum_sha256=checksum,
             storage_key=key,
         )
         self.repository.add(document)
@@ -127,7 +125,6 @@ class DocumentService:
             document.folder_id = changes["folder_id"]
         if changes.get("title"):
             document.title = changes["title"]
-            document.indexed = False
 
         self.audit.record(
             action="document.updated",
@@ -301,19 +298,17 @@ class DocumentService:
                 f"file type not accepted; allowed: {', '.join(allowed)}"
             )
 
-    async def _read_capped(self, upload: UploadFile) -> tuple[bytes, int, str]:
+    async def _read_capped(self, upload: UploadFile) -> tuple[bytes, int]:
         """Read the upload in chunks, enforcing the size cap and hashing as we go."""
         cap = self.settings.max_upload_size_bytes
-        digest = hashlib.sha256()
         buffer = bytearray()
         size = 0
         while chunk := await upload.read(CHUNK_SIZE):
             size += len(chunk)
             if size > cap:
                 raise PayloadTooLargeError(f"file exceeds the {cap}-byte upload limit")
-            digest.update(chunk)
             buffer.extend(chunk)
-        return bytes(buffer), size, digest.hexdigest()
+        return bytes(buffer), size
 
     async def _get_any(
         self, actor: User, workspace_id: uuid.UUID, document_id: uuid.UUID

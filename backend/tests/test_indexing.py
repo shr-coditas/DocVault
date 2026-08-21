@@ -124,14 +124,10 @@ async def _document(env: Env, document_id: str) -> Document:
 
 
 async def _chunks(env: Env, document_id: str) -> list[DocumentChunk]:
-    document = await _document(env, document_id)
     async with env.session_factory() as session:
         stmt = (
             select(DocumentChunk)
-            .where(
-                DocumentChunk.document_id == uuid.UUID(document_id),
-                DocumentChunk.index_generation == document.index_generation,
-            )
+            .where(DocumentChunk.document_id == uuid.UUID(document_id))
             .order_by(DocumentChunk.chunk_index)
         )
         return list((await session.execute(stmt)).scalars())
@@ -142,7 +138,7 @@ async def _all_chunks(env: Env, document_id: str) -> list[DocumentChunk]:
         stmt = (
             select(DocumentChunk)
             .where(DocumentChunk.document_id == uuid.UUID(document_id))
-            .order_by(DocumentChunk.index_generation, DocumentChunk.chunk_index)
+            .order_by(DocumentChunk.chunk_index)
         )
         return list((await session.execute(stmt)).scalars())
 
@@ -161,8 +157,6 @@ async def test_indexes_pending_documents(env: Env) -> None:
         assert document.indexed is True
         assert document.indexed_at is not None
         assert document.index_error is None
-        assert document.index_generation == 1
-        assert document.active_embedding_profile == env.service.embedding_profile
         assert await _chunks(env, document_id)
 
 
@@ -176,7 +170,6 @@ async def test_chunks_carry_tenant_and_model_metadata(env: Env) -> None:
         # denormalised so the tenant filter stands without the join
         assert str(chunk.workspace_id) == env.workspace_id
         assert chunk.embedding_model == "fake-token-hash"
-        assert chunk.index_generation == 1
         assert len(chunk.embedding) == 384
     assert [chunk.chunk_index for chunk in chunks] == list(range(len(chunks)))
 
@@ -192,29 +185,23 @@ async def test_rerun_processes_nothing(env: Env) -> None:
     # the selector only sees indexed = false, so a second run has no work
     assert await _index_all(env) == []
     assert len(await _chunks(env, document_id)) == before
-    assert (await _document(env, document_id)).index_generation == 1
+    assert (await _document(env, document_id)).indexed is True
 
 
-async def test_reindex_activates_new_chunks_and_retains_previous_generation(env: Env) -> None:
-    document_id = await _upload(env, "a.txt", _prose("epsilon"))
+async def test_title_change_is_display_only_and_does_not_schedule_reindex(env: Env) -> None:
+    document_id = await _upload(env, "a.txt", _prose("display title"))
     await _index_all(env)
-    first_pass = await _chunks(env, document_id)
 
-    async with env.session_factory() as session:
-        document = await DocumentRepository(session).get(uuid.UUID(document_id))
-        assert document is not None
-        document.indexed = False
-        await session.commit()
+    response = await env.client.patch(
+        f"{WORKSPACES}/{env.workspace_id}/documents/{document_id}",
+        json={"title": "Renamed for display"},
+        headers=env.headers,
+    )
 
-    assert await _index_all(env) == ["indexed"]
-    second_pass = await _chunks(env, document_id)
-
-    # The active query sees only generation two; generation one remains for
-    # citation continuity and is removed after a later activation.
-    assert len(second_pass) == len(first_pass)
-    assert {chunk.index_generation for chunk in second_pass} == {2}
-    assert {chunk.index_generation for chunk in await _all_chunks(env, document_id)} == {1, 2}
-    assert (await _document(env, document_id)).index_generation == 2
+    assert response.status_code == 200
+    assert response.json()["title"] == "Renamed for display"
+    assert (await _document(env, document_id)).indexed is True
+    assert await _index_all(env) == []
 
 
 # -- failure handling ------------------------------------------------------
@@ -230,7 +217,6 @@ async def test_unreadable_file_records_error_and_run_continues(env: Env) -> None
     failed = await _document(env, broken)
     assert failed.indexed is False
     assert failed.index_error is not None
-    assert failed.index_attempts == 1
     assert await _chunks(env, broken) == []
 
     # one bad document must not stop the run
@@ -255,18 +241,6 @@ async def test_embedding_failure_is_recorded_not_raised(env: Env) -> None:
     assert document.indexed is False
     assert "embedding provider unavailable" in (document.index_error or "")
     assert await _chunks(env, document_id) == []
-
-
-async def test_poison_document_is_skipped_after_max_attempts(env: Env) -> None:
-    await _upload(env, "broken.pdf", b"%PDF-1.4 nope", "application/pdf")
-
-    for _ in range(SETTINGS.max_index_attempts):
-        assert await _index_all(env, max_attempts=SETTINGS.max_index_attempts) == ["failed"]
-
-    # the attempt cap is what stops one bad file consuming every future run
-    assert await _index_all(env, max_attempts=SETTINGS.max_index_attempts) == []
-    # ...but --retry-failed ignores the cap
-    assert await _index_all(env) == ["failed"]
 
 
 # -- selection -------------------------------------------------------------

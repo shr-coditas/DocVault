@@ -888,3 +888,24 @@ half could be swapped out. This branch replaces it with a supervisor.
   are gone; what the conversation ledger actually reads is `evidence_sufficient:
   bool | None`, where None still means nobody judged. The five distinct silences
   and all eleven message kinds are unchanged.
+
+## 2026-08-21 - index each immutable document once
+
+DocVault does not replace uploaded file bytes, title changes are display-only,
+and this small deployment does not roll embedding models or chunking strategies.
+The generation scheme therefore described a reindexing lifecycle the product
+does not offer. `documents.index_generation`, run targets, node/chunk generations,
+and generation-bearing citation provenance were removed together rather than
+leaving a constant generation value threaded through every layer.
+
+- **`indexed` is the visibility gate.** Search requires the parent document to
+  have `indexed = true`. Nodes and chunks may be staged while it is false, but
+  they become searchable only after validation and activation succeed.
+- **One durable run belongs to one document.** A failed run is cleaned and
+  reused by an explicit retry. A successful document is never selected again.
+- **Sources identify the exact chunk.** Conversation provenance stores
+  `chunk_id` and no longer relocates a citation across index generations. If a
+  source disappears, it is unresolved instead of being presented as equivalent
+  to a replacement chunk.
+- **Renaming does not dirty the index.** The title is presentation metadata and
+  updating it leaves `indexed` unchanged.

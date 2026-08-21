@@ -1,4 +1,3 @@
-import hashlib
 from collections.abc import AsyncIterator
 
 import pytest
@@ -83,7 +82,6 @@ async def test_upload_returns_metadata(docs_client: AsyncClient) -> None:
 
     assert doc["file_name"] == "notes.txt"
     assert doc["size_bytes"] == len(content)
-    assert doc["checksum_sha256"] == hashlib.sha256(content).hexdigest()
     assert doc["mime_type"] == "text/plain"
     assert doc["search_status"] == "waiting_for_index"
 

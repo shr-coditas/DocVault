@@ -18,7 +18,6 @@ from dataclasses import dataclass
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import Settings, get_settings
@@ -27,7 +26,6 @@ from app.db.session import get_db
 from app.dependencies import get_embedder, get_reranker, get_storage_service
 from app.main import create_app
 from app.models.document import Document
-from app.models.document_chunk import DocumentChunk
 from app.repository.document_repository import DocumentRepository
 from app.services.indexing_service import IndexingService
 from app.services.search_service import MAX_LIMIT
@@ -296,7 +294,6 @@ async def test_public_default_is_hybrid_with_component_scores(env: Env) -> None:
     assert hit["scores"]["fusion"] is not None
     assert hit["scores"]["rerank"] is not None
     assert hit["logical_key"]
-    assert hit["index_generation"] == 1
 
 
 async def test_lexical_mode_does_not_embed_the_query(env: Env) -> None:
@@ -351,37 +348,17 @@ async def test_trashed_document_drops_out_and_restore_brings_it_back(env: Env) -
     assert await _hit_documents(env, "cycling", semantic_min_score=0.1) == {document_id}
 
 
-async def test_superseded_generation_chunks_are_invisible(env: Env) -> None:
-    """Chunks are visible only at the document's current index generation.
-
-    Bumping the generation without rewriting chunks is not something the
-    pipeline does today - the indexing transaction replaces both at once. It is
-    simulated here because the guard exists for the step-wise workflow that will
-    write chunks incrementally, and an unexercised guard is a guess.
-    """
+async def test_unindexed_document_chunks_are_invisible(env: Env) -> None:
     document_id = await _seed(env, "climbing")
     assert await _hit_documents(env, "climbing", semantic_min_score=0.1) == {document_id}
 
     async with env.session_factory() as session:
         document = await session.get(Document, uuid.UUID(document_id))
         assert document is not None
-        document.index_generation += 1
+        document.indexed = False
         await session.commit()
 
     assert await _hit_documents(env, "climbing", semantic_min_score=-1) == set()
-
-
-async def test_same_dimension_chunks_from_an_inactive_profile_are_invisible(env: Env) -> None:
-    document_id = await _seed(env, "profileisolated")
-    async with env.session_factory() as session:
-        await session.execute(
-            update(DocumentChunk)
-            .where(DocumentChunk.document_id == uuid.UUID(document_id))
-            .values(embedding_profile_id="different-384-dimensional-profile")
-        )
-        await session.commit()
-
-    assert await _hit_documents(env, "profileisolated", semantic_min_score=-1) == set()
 
 
 async def test_permanent_delete_removes_the_chunks(env: Env) -> None:

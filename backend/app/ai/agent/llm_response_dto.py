@@ -1,8 +1,9 @@
 from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
-class Supervision(BaseModel):
 
+class Supervision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["search", "answer", "clarify", "refuse", "unsupported"]
     question: str = Field(default="", max_length=4000)

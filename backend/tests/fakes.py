@@ -11,7 +11,7 @@ import zlib
 from collections.abc import Sequence
 from typing import Any
 
-from app.ai.agent.prompt_utils import Supervision
+from app.ai.agent.llm_response_dto import Supervision
 from app.services.ai_types import (
     ContextReason,
     ContextResolution,

@@ -1,6 +1,8 @@
 import json
 from collections.abc import Sequence
+
 from langchain_core.messages import AnyMessage
+
 from app.services.ai_types import SearchHit
 
 SUPERVISOR_PROMPT = """
@@ -13,11 +15,11 @@ Decide the next step (`search`, `answer`, `clarify`, `refuse`, `unsupported`) wh
 ## Instructions
 - Never answer the question directly or perform searches yourself.
 - Choose only one of the following steps:
-  - **search** → run searches you list, then ask again  
-  - **answer** → write a cited answer from sources already retrieved  
-  - **clarify** → ask the user when the question is ambiguous  
-  - **refuse** → if the message is not about workspace documents  
-  - **unsupported** → if sources were retrieved but don’t answer
+  - **search** → run searches you list, then ask again
+  - **answer** → write a cited answer from sources already retrieved
+  - **clarify** → ask the user when the question is ambiguous
+  - **refuse** → if the message is not about workspace documents
+  - **unsupported** → if sources were retrieved but don't answer
 - Use history only to turn follow-ups into standalone questions.
 - Prefer answering when possible; search only if a named part is missing.
 - Clarify rather than guess when references have multiple meanings.

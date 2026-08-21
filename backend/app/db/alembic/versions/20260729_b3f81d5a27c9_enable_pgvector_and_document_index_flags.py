@@ -35,20 +35,6 @@ def upgrade() -> None:
     )
     op.add_column("documents", sa.Column("indexed_at", sa.DateTime(timezone=True), nullable=True))
     op.add_column("documents", sa.Column("index_error", sa.Text(), nullable=True))
-    op.add_column(
-        "documents",
-        sa.Column("index_attempts", sa.Integer(), server_default="0", nullable=False),
-    )
-    op.add_column(
-        "documents",
-        sa.Column("index_generation", sa.Integer(), server_default="0", nullable=False),
-    )
-
-    # bare suffix: the metadata naming convention renders
-    # ck_documents_index_attempts_non_negative. Do not wrap in op.f() - that
-    # opts out of the convention while the model does not, so the two would
-    # disagree about the same constraint's name.
-    op.create_check_constraint("index_attempts_non_negative", "documents", "index_attempts >= 0")
     op.create_index(
         "ix_documents_unindexed",
         "documents",
@@ -59,9 +45,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_documents_unindexed", table_name="documents")
-    op.drop_constraint("index_attempts_non_negative", "documents", type_="check")
-    op.drop_column("documents", "index_generation")
-    op.drop_column("documents", "index_attempts")
     op.drop_column("documents", "index_error")
     op.drop_column("documents", "indexed_at")
     op.drop_column("documents", "indexed")

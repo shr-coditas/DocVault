@@ -197,7 +197,6 @@ def upgrade() -> None:
         sa.Column("message_id", sa.Uuid(), nullable=False),
         sa.Column("document_id", sa.Uuid(), nullable=False),
         sa.Column("chunk_id", sa.Uuid(), nullable=False),
-        sa.Column("index_generation", sa.Integer(), nullable=False),
         sa.Column("logical_key", sa.String(length=1024), nullable=False),
         sa.Column("document_title_snapshot", sa.String(length=255), nullable=False),
         sa.Column("heading", sa.Text(), nullable=True),
@@ -214,7 +213,6 @@ def upgrade() -> None:
         sa.Column("citation_marker", sa.Integer(), nullable=True),
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.CheckConstraint("retrieval_rank > 0", name="retrieval_rank_positive"),
-        sa.CheckConstraint("index_generation > 0", name="index_generation_positive"),
         sa.CheckConstraint(
             "citation_marker is null or citation_marker > 0",
             name="citation_marker_positive",
@@ -237,10 +235,8 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint(
             "message_id",
-            "document_id",
-            "index_generation",
-            "logical_key",
-            name="uq_message_sources_message_logical_source",
+            "chunk_id",
+            name="uq_message_sources_message_chunk",
         ),
         sa.UniqueConstraint(
             "message_id",

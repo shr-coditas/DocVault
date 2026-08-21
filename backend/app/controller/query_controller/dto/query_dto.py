@@ -62,7 +62,6 @@ class CitationOut(BaseModel):
     page_numbers: list[int]
     heading: str | None
     source_spans: list[ChunkSourceSpanOut]
-    index_generation: int
     logical_key: str
 
 

@@ -324,10 +324,6 @@ async def test_turn_is_committed_before_generation_and_finalizes_with_sources(
     assert model.observed_source_count == 0
     assert model.observed_lease_token is not None
 
-    polled = await env.client.get(body["status_url"], headers=env.owner)
-    assert polled.status_code == 200
-    assert polled.json() == body
-
 
 async def test_finalized_duplicate_returns_the_same_turn_without_work(env: Env) -> None:
     await _seed_document(env)
@@ -376,8 +372,7 @@ async def test_pending_duplicate_is_accepted_for_polling_and_other_input_conflic
     )
     assert duplicate.status_code == 202
     assert duplicate.json()["turn_id"] == str(turn_id)
-    assert duplicate.json()["retry_after_seconds"] == 2
-    assert duplicate.json()["status_url"].endswith(f"/turns/{turn_id}")
+
     assert env.model.calls == 0
     assert env.embedder.embedded_queries == []
 
@@ -759,10 +754,8 @@ async def test_selected_scope_degrades_and_named_missing_document_refuses(env: E
         headers=env.viewer,
     )
     body = first.json()
-    assert body["scope_degraded"] is True
-    assert body["unavailable_documents"][0]["document_id"] == beta_id
     assistant = body["messages"][1]
-    assert assistant["scope_degraded"] is True
+    assert assistant["unavailable_documents"][0]["document_id"] == beta_id
     assert {source["document_id"] for source in assistant["sources"]} == {alpha_id}
 
     env.embedder.embedded_queries.clear()

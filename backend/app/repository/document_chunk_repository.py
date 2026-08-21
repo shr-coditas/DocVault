@@ -86,8 +86,7 @@ class DocumentChunkRepository:
                 DocumentChunk.workspace_id == workspace_id,
                 Document.workspace_id == workspace_id,
                 Document.deleted_at.is_(None),
-                DocumentChunk.index_generation == Document.index_generation,
-                DocumentChunk.embedding_profile_id == Document.active_embedding_profile,
+                Document.indexed.is_(True),
             )
         )
         if access is not None:
@@ -154,7 +153,6 @@ class DocumentChunkRepository:
         *,
         workspace_id: uuid.UUID,
         document_id: uuid.UUID,
-        generation: int,
         parent_node_id: uuid.UUID,
         ordinal: int,
         access: tuple[uuid.UUID, list[uuid.UUID]] | None,
@@ -162,7 +160,6 @@ class DocumentChunkRepository:
         stmt = self._accessible_stmt(
             workspace_id=workspace_id, access=access, document_ids=[document_id]
         ).where(
-            DocumentChunk.index_generation == generation,
             DocumentChunk.parent_node_id == parent_node_id,
             DocumentChunk.ordinal_in_parent.in_([max(0, ordinal - 1), ordinal + 1]),
         )

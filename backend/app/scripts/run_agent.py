@@ -34,8 +34,8 @@ from langchain_core.runnables import Runnable
 
 from app.ai.agent.agent_manager import Context, State
 from app.ai.agent.graph_manager import get_graph
-from app.ai.agent.prompt_utils import Supervision
-from app.ai.agent.workflow_manager import serialize_conversation, create_decision_model
+from app.ai.agent.llm_response_dto import Supervision
+from app.ai.agent.workflow_manager import create_decision_model, serialize_conversation
 from app.config import get_settings
 from app.db.session import async_session_factory, dispose_engine
 from app.repository.user_repository import UserRepository

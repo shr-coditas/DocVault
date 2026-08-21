@@ -51,7 +51,6 @@ class Settings(BaseSettings):
 
     index_batch_limit: int = 50
 
-    max_index_attempts: int = 3
     index_lease_minutes: int = 15
     index_node_batch_size: int = 500
     index_chunk_write_batch_size: int = 200

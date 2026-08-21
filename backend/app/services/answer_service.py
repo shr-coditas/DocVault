@@ -214,7 +214,6 @@ class AnswerService:
                         chunk_id=hit.chunk_id,
                         heading=hit.heading,
                         source_spans=hit.source_spans,
-                        index_generation=hit.index_generation,
                         logical_key=hit.logical_key,
                     )
                 )

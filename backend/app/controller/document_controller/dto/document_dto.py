@@ -25,7 +25,6 @@ class DocumentOut(BaseModel):
     file_name: str
     mime_type: str
     size_bytes: int
-    checksum_sha256: str
     visibility: DocumentVisibility
     search_status: DocumentSearchStatus
     created_at: datetime

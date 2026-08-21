@@ -46,9 +46,9 @@ def _open_document(document_id: str) -> None:
 
 
 def _render_scope_warning(message: dict[str, Any]) -> None:
-    if not message.get("scope_degraded"):
-        return
     unavailable = message.get("unavailable_documents") or []
+    if not unavailable:
+        return
     names = ", ".join(
         str(document.get("title") or document.get("file_name") or "Unavailable document")
         for document in unavailable
@@ -93,10 +93,7 @@ def _render_sources(message: dict[str, Any]) -> None:
                 if source.get("supplied_to_model")
                 else "Retrieved only"
             )
-            st.caption(
-                f"{supplied} · generation {source['index_generation']} · "
-                f"source `{source['logical_key']}`"
-            )
+            st.caption(f"{supplied} · source `{source['logical_key']}`")
             if st.button(
                 "Open document",
                 key=f"open-source-{source['id']}",

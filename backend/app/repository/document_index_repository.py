@@ -17,13 +17,8 @@ class DocumentIndexRepository:
     def add_run(self, run: DocumentIndexRun) -> None:
         self.session.add(run)
 
-    async def run_for_target(
-        self, document_id: uuid.UUID, target_generation: int
-    ) -> DocumentIndexRun | None:
-        stmt = select(DocumentIndexRun).where(
-            DocumentIndexRun.document_id == document_id,
-            DocumentIndexRun.target_generation == target_generation,
-        )
+    async def run_for_document(self, document_id: uuid.UUID) -> DocumentIndexRun | None:
+        stmt = select(DocumentIndexRun).where(DocumentIndexRun.document_id == document_id)
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def competing_run(
@@ -81,17 +76,6 @@ class DocumentIndexRepository:
         )
         return (await self.session.execute(stmt)).scalar_one()
 
-    async def delete_generations_older_than(
-        self, document_id: uuid.UUID, minimum_generation: int
-    ) -> None:
-        stale_runs = select(DocumentIndexRun.id).where(
-            DocumentIndexRun.document_id == document_id,
-            DocumentIndexRun.target_generation < minimum_generation,
-        )
-        await self.session.execute(
-            delete(DocumentIndexRun).where(DocumentIndexRun.id.in_(stale_runs))
-        )
-
     async def expired_nonterminal(self, now: datetime) -> list[DocumentIndexRun]:
         stmt = select(DocumentIndexRun).where(
             DocumentIndexRun.status.not_in(
@@ -110,13 +94,12 @@ class DocumentIndexRepository:
         return list((await self.session.execute(stmt)).scalars())
 
     async def nodes_by_ids(
-        self, ids: list[uuid.UUID], *, document_id: uuid.UUID, generation: int
+        self, ids: list[uuid.UUID], *, document_id: uuid.UUID
     ) -> list[DocumentStructureNode]:
         if not ids:
             return []
         stmt = select(DocumentStructureNode).where(
             DocumentStructureNode.id.in_(ids),
             DocumentStructureNode.document_id == document_id,
-            DocumentStructureNode.index_generation == generation,
         )
         return list((await self.session.execute(stmt)).scalars())

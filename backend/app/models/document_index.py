@@ -32,16 +32,13 @@ class DocumentIndexRun(UUIDPrimaryKeyMixin, Base):
             ["documents.id", "documents.workspace_id"],
             ondelete="CASCADE",
         ),
-        sa.UniqueConstraint("document_id", "target_generation"),
+        sa.UniqueConstraint("document_id"),
         sa.CheckConstraint(f"status in ({_RUN_STATUSES})", name="status"),
-        sa.CheckConstraint("target_generation > 0", name="target_generation_positive"),
         sa.Index("ix_document_index_runs_status_lease", "status", "lease_expires_at"),
     )
 
     workspace_id: Mapped[uuid.UUID]
     document_id: Mapped[uuid.UUID]
-    target_generation: Mapped[int]
-    source_checksum: Mapped[str] = mapped_column(sa.String(64))
     extractor_profile: Mapped[str] = mapped_column(sa.String(255))
     normalizer_profile: Mapped[str] = mapped_column(sa.String(255))
     chunker_profile: Mapped[str] = mapped_column(sa.String(255))
@@ -73,12 +70,7 @@ class DocumentStructureNode(UUIDPrimaryKeyMixin, Base):
         sa.CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
         sa.CheckConstraint("confidence >= 0 and confidence <= 1", name="confidence_range"),
         sa.Index("ix_document_nodes_parent_ordinal", "parent_id", "ordinal"),
-        sa.Index(
-            "ix_document_nodes_document_generation",
-            "workspace_id",
-            "document_id",
-            "index_generation",
-        ),
+        sa.Index("ix_document_nodes_document", "workspace_id", "document_id"),
     )
 
     run_id: Mapped[uuid.UUID] = mapped_column(
@@ -86,7 +78,6 @@ class DocumentStructureNode(UUIDPrimaryKeyMixin, Base):
     )
     workspace_id: Mapped[uuid.UUID]
     document_id: Mapped[uuid.UUID]
-    index_generation: Mapped[int]
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         sa.ForeignKey("document_nodes.id", ondelete="CASCADE")
     )

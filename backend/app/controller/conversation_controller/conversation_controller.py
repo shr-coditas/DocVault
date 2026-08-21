@@ -15,7 +15,6 @@ from app.controller.conversation_controller.dto.conversation_dto import (
 from app.models.user import User
 from app.services.conversation_service import (
     REDACTED_ANSWER_MESSAGE,
-    TURN_RETRY_AFTER_SECONDS,
     ConversationRecord,
     ConversationService,
     MessageRecord,
@@ -66,7 +65,6 @@ def _message_out(record: MessageRecord) -> ConversationMessageOut:
             context_eligible=False,
             redacted=True,
             sources=[],
-            scope_degraded=bool(unavailable_documents),
             unavailable_documents=unavailable_documents,
             client_message_id=message.client_message_id,
             model=None,
@@ -93,7 +91,6 @@ def _message_out(record: MessageRecord) -> ConversationMessageOut:
                 chunk_id=source_record.source.chunk_id,
                 resolved_chunk_id=source_record.resolved_chunk_id,
                 relocated=source_record.relocated,
-                index_generation=source_record.source.index_generation,
                 logical_key=source_record.source.logical_key,
                 heading=source_record.source.heading,
                 breadcrumb=source_record.source.breadcrumb,
@@ -105,7 +102,6 @@ def _message_out(record: MessageRecord) -> ConversationMessageOut:
             )
             for source_record in record.sources
         ],
-        scope_degraded=bool(unavailable_documents),
         unavailable_documents=unavailable_documents,
         client_message_id=message.client_message_id,
         model=message.model,
@@ -117,33 +113,16 @@ def _message_out(record: MessageRecord) -> ConversationMessageOut:
 
 
 def _turn_out(
-    workspace_id: uuid.UUID,
-    conversation_id: uuid.UUID,
     turn: TurnRecord,
 ) -> ConversationTurnOut:
     assistant_record = next(
         record for record in turn.messages if record.message.role == "assistant"
     )
     status = assistant_record.message.status
-    unavailable_documents = [
-        UnavailableConversationDocumentOut(
-            document_id=document.document_id,
-            title=document.title_snapshot,
-            file_name=document.file_name_snapshot,
-        )
-        for document in assistant_record.unavailable_documents
-    ]
     return ConversationTurnOut(
         turn_id=turn.turn_id,
         status=status,
         messages=[_message_out(message) for message in turn.messages],
-        status_url=(
-            f"/api/v1/workspaces/{workspace_id}/conversations/"
-            f"{conversation_id}/turns/{turn.turn_id}"
-        ),
-        retry_after_seconds=(TURN_RETRY_AFTER_SECONDS if status == "pending" else None),
-        scope_degraded=bool(unavailable_documents),
-        unavailable_documents=unavailable_documents,
     )
 
 
@@ -220,7 +199,7 @@ async def submit_message(
 ) -> tuple[ConversationTurnOut, bool]:
     submission = await service.submit_message(user, workspace_id, conversation_id, data)
     return (
-        _turn_out(workspace_id, conversation_id, submission.turn),
+        _turn_out(submission.turn),
         submission.created,
     )
 
@@ -233,4 +212,4 @@ async def get_turn(
     service: ConversationService,
 ) -> ConversationTurnOut:
     turn = await service.get_turn(user, workspace_id, conversation_id, turn_id)
-    return _turn_out(workspace_id, conversation_id, turn)
+    return _turn_out(turn)

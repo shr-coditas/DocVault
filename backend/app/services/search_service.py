@@ -258,7 +258,6 @@ class SearchService:
             chunk_type=cast(ChunkType, chunk.chunk_type),
             breadcrumb=chunk.breadcrumb,
             logical_key=chunk.logical_key,
-            index_generation=chunk.index_generation,
             scores=ScoreBreakdown(
                 semantic=candidate.semantic,
                 lexical=candidate.lexical,
@@ -289,7 +288,6 @@ class SearchService:
             neighbors = await self.chunks.structural_neighbors(
                 workspace_id=workspace_id,
                 document_id=hit.document_id,
-                generation=hit.index_generation,
                 parent_node_id=hit.parent_node_id,
                 ordinal=hit.ordinal_in_parent,
                 access=access,

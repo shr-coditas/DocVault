@@ -11,8 +11,8 @@ from langgraph.graph.message import add_messages
 from langgraph.runtime import Runtime
 
 from app.ai import prompts
-from app.ai.agent.prompt_utils import SUPERVISOR_PROMPT, make_decision_payload
 from app.ai.agent.llm_response_dto import Supervision
+from app.ai.agent.prompt_utils import SUPERVISOR_PROMPT, make_decision_payload
 from app.config import Settings
 from app.models.user import User
 from app.services.ai_types import (
@@ -115,9 +115,7 @@ class State(TypedDict):
 
 async def guard(state: State, runtime: Runtime[Context]) -> dict[str, object]:
     context = runtime.context
-    question = str(
-        state["messages"][-1].content
-    ) 
+    question = str(state["messages"][-1].content)
     guardrails = await GuardrailService(settings=context.settings).run(question)
     if guardrails.passed:
         return {"question": question, "guardrails": guardrails, "next_step": "classify"}
@@ -187,9 +185,9 @@ async def supervise(state: State, runtime: Runtime[Context]) -> dict[str, object
     searches_left = max(0, settings.agent_max_searches - searches_run)
     verdict = state.get("verdict")
 
-    interaction_snapshot_json  = make_decision_payload(
+    interaction_snapshot_json = make_decision_payload(
         question,
-        state["messages"][:-1], 
+        state["messages"][:-1],
         sources,
         searches_run=searches_run,
         searches_left=searches_left,
@@ -200,7 +198,10 @@ async def supervise(state: State, runtime: Runtime[Context]) -> dict[str, object
     try:
         response = await asyncio.wait_for(
             context.supervisor.ainvoke(
-                [SystemMessage(content=SUPERVISOR_PROMPT), HumanMessage(content=interaction_snapshot_json )]
+                [
+                    SystemMessage(content=SUPERVISOR_PROMPT),
+                    HumanMessage(content=interaction_snapshot_json),
+                ]
             ),
             timeout=settings.agent_timeout_seconds,
         )
@@ -488,9 +489,9 @@ def _merge(
     ``limit`` is the caller's source budget, so three searches must not hand the
     answerer three times the passages one search would have.
     """
-    best: dict[tuple[uuid.UUID, int, str], SearchHit] = {}
+    best: dict[uuid.UUID, SearchHit] = {}
     for hit in (*existing, *fresh):
-        identity = (hit.document_id, hit.index_generation, hit.logical_key)
+        identity = hit.chunk_id
         incumbent = best.get(identity)
         if incumbent is None or hit.score > incumbent.score:
             best[identity] = hit

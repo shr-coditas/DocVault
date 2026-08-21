@@ -73,7 +73,6 @@ def _document(
         file_name=f"{marker}.md",
         mime_type="text/markdown",
         size_bytes=10,
-        checksum_sha256=marker.ljust(64, "0")[:64],
         storage_key=f"tests/{uuid7()}/{marker}.md",
         visibility=visibility,
         deleted_at=deleted_at,

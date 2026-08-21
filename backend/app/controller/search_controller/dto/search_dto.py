@@ -58,7 +58,6 @@ class SearchHitOut(BaseModel):
     chunk_type: str
     breadcrumb: str | None
     logical_key: str
-    index_generation: int
     scores: ScoreBreakdownOut
 
 

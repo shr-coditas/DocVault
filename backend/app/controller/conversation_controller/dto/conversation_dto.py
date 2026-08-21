@@ -66,7 +66,6 @@ class ConversationMessageSourceOut(BaseModel):
     chunk_id: uuid.UUID
     resolved_chunk_id: uuid.UUID | None
     relocated: bool
-    index_generation: int
     logical_key: str
     heading: str | None
     breadcrumb: str | None
@@ -96,7 +95,6 @@ class ConversationMessageOut(BaseModel):
     context_eligible: bool
     redacted: bool = False
     sources: list[ConversationMessageSourceOut] = Field(default_factory=list)
-    scope_degraded: bool = False
     unavailable_documents: list[UnavailableConversationDocumentOut] = Field(default_factory=list)
     client_message_id: uuid.UUID | None
     model: str | None
@@ -115,7 +113,3 @@ class ConversationTurnOut(BaseModel):
     turn_id: uuid.UUID
     status: MessageStatus
     messages: list[ConversationMessageOut]
-    status_url: str
-    retry_after_seconds: int | None = None
-    scope_degraded: bool = False
-    unavailable_documents: list[UnavailableConversationDocumentOut] = Field(default_factory=list)

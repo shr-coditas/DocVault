@@ -159,8 +159,8 @@ class _FinalTurn:
     citations: tuple[Citation, ...]
 
 
-def _source_key(hit: SearchHit) -> tuple[uuid.UUID, int, str]:
-    return hit.document_id, hit.index_generation, hit.logical_key
+def _source_key(hit: SearchHit) -> uuid.UUID:
+    return hit.chunk_id
 
 
 def _encode_cursor(updated_at: datetime, conversation_id: uuid.UUID) -> str:
@@ -652,21 +652,13 @@ class ConversationService:
     @staticmethod
     def _message_sources(assistant_message_id: uuid.UUID, final: _FinalTurn) -> list[MessageSource]:
         selected = {_source_key(hit) for hit in final.selected_sources}
-        citations = {
-            (
-                citation.document_id,
-                citation.index_generation,
-                citation.logical_key,
-            ): citation.marker
-            for citation in final.citations
-        }
+        citations = {citation.chunk_id: citation.marker for citation in final.citations}
         return [
             MessageSource(
                 id=uuid7(),
                 message_id=assistant_message_id,
                 document_id=hit.document_id,
                 chunk_id=hit.chunk_id,
-                index_generation=hit.index_generation,
                 logical_key=hit.logical_key,
                 document_title_snapshot=hit.document_title,
                 heading=hit.heading,

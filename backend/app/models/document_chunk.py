@@ -22,14 +22,13 @@ class DocumentChunk(UUIDPrimaryKeyMixin, Base):
             ["documents.id", "documents.workspace_id"],
             ondelete="CASCADE",
         ),
-        sa.UniqueConstraint("document_id", "index_generation", "logical_key"),
+        sa.UniqueConstraint("document_id", "logical_key"),
         sa.CheckConstraint("chunk_index >= 0", name="chunk_index_non_negative"),
         sa.CheckConstraint("ordinal_in_parent >= 0", name="ordinal_in_parent_non_negative"),
         sa.Index(
-            "ix_document_chunks_document_generation",
+            "ix_document_chunks_document",
             "workspace_id",
             "document_id",
-            "index_generation",
             "chunk_index",
         ),
         sa.Index("ix_document_chunks_parent_ordinal", "parent_node_id", "ordinal_in_parent"),
@@ -50,7 +49,6 @@ class DocumentChunk(UUIDPrimaryKeyMixin, Base):
     )
     document_id: Mapped[uuid.UUID]
     workspace_id: Mapped[uuid.UUID]
-    index_generation: Mapped[int]
     logical_key: Mapped[str] = mapped_column(sa.String(1024))
     chunk_index: Mapped[int]
     structural_node_id: Mapped[uuid.UUID] = mapped_column(

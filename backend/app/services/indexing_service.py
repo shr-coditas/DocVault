@@ -44,8 +44,6 @@ class _Claim:
     storage_key: str
     file_name: str
     title: str
-    source_checksum: str
-    target_generation: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,16 +100,13 @@ class IndexingService:
                 await session.rollback()
                 return None
 
-            target = document.index_generation + 1
             lease_token = uuid7()
-            run = await indexes.run_for_target(document_id, target)
+            run = await indexes.run_for_document(document_id)
             if run is None:
                 run = DocumentIndexRun(
                     id=uuid7(),
                     workspace_id=document.workspace_id,
                     document_id=document.id,
-                    target_generation=target,
-                    source_checksum=document.checksum_sha256,
                     extractor_profile="pending",
                     normalizer_profile=self.normalizer_profile,
                     chunker_profile=self.chunking.profile_name,
@@ -130,7 +125,6 @@ class IndexingService:
                 run.error = None
                 run.completed_at = None
                 run.embedding_profile = self.embedding_profile
-            document.index_attempts += 1
             await session.commit()
             return _Claim(
                 run_id=run.id,
@@ -140,8 +134,6 @@ class IndexingService:
                 storage_key=document.storage_key,
                 file_name=document.file_name,
                 title=document.title,
-                source_checksum=document.checksum_sha256,
-                target_generation=target,
             )
 
     async def _transition(
@@ -168,17 +160,13 @@ class IndexingService:
     async def load_and_prepare(self, claim: _Claim) -> _Prepared:
         await self._transition(claim, IndexRunStatus.EXTRACTING)
         data = await self.storage.read_all(claim.storage_key)
-        if hashlib.sha256(data).hexdigest() != claim.source_checksum:
-            raise RuntimeError("stored object checksum no longer matches the document row")
         artifact = await self.extraction.extract(data, claim.file_name)
         if "ocr_required" in artifact.warnings:
             raise OcrRequiredError("OCR required: insufficient native PDF text")
         if artifact.is_empty:
             raise RuntimeError("no extractable text")
 
-        key = index_artifact_key(
-            str(claim.workspace_id), str(claim.document_id), claim.target_generation
-        )
+        key = index_artifact_key(str(claim.workspace_id), str(claim.document_id))
         payload = gzip.compress(
             json.dumps(asdict(artifact), default=str, ensure_ascii=False).encode("utf-8")
         )
@@ -200,7 +188,6 @@ class IndexingService:
                 "run_id": claim.run_id,
                 "workspace_id": claim.workspace_id,
                 "document_id": claim.document_id,
-                "index_generation": claim.target_generation,
                 "parent_id": node.parent_id,
                 "logical_path": node.logical_path,
                 "ordinal": node.ordinal,
@@ -243,7 +230,6 @@ class IndexingService:
                         "run_id": claim.run_id,
                         "document_id": claim.document_id,
                         "workspace_id": claim.workspace_id,
-                        "index_generation": claim.target_generation,
                         "logical_key": chunk.logical_key,
                         "chunk_index": chunk.chunk_index,
                         "structural_node_id": chunk.structural_node_id,
@@ -307,8 +293,6 @@ class IndexingService:
             document.indexed = True
             document.indexed_at = datetime.now(UTC)
             document.index_error = None
-            document.index_generation = claim.target_generation
-            document.active_embedding_profile = self.embedding_profile
             AuditService(session).record(
                 action="document.indexed",
                 resource_type="document",
@@ -317,15 +301,8 @@ class IndexingService:
                 actor_id=None,
                 chunk_count=len(prepared.chunks),
                 embedding_model=self.embedder.model_name,
-                index_generation=claim.target_generation,
             )
             await session.commit()
-
-        async with self.session_factory() as cleanup_session:
-            await DocumentIndexRepository(cleanup_session).delete_generations_older_than(
-                claim.document_id, max(1, claim.target_generation - 1)
-            )
-            await cleanup_session.commit()
         return IndexOutcome(claim.document_id, "indexed", chunk_count=len(prepared.chunks))
 
     async def record_failure(
@@ -350,7 +327,6 @@ class IndexingService:
                     resource_id=document_id,
                     workspace_id=document.workspace_id,
                     actor_id=None,
-                    attempt=document.index_attempts,
                     reason=message,
                 )
             await session.commit()

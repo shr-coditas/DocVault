@@ -312,20 +312,14 @@ class ConversationRepository:
         *,
         workspace_id: uuid.UUID,
     ) -> dict[uuid.UUID, ResolvedSource]:
-        """Resolve exact historical chunks, then current logical locations.
-
-        The current-generation fallback is navigation only. ``relocated`` makes
-        that distinction explicit so a caller cannot present it as the exact
-        chunk that grounded the historical answer.
-        """
+        """Resolve the exact chunk that grounded each historical source."""
         ids = list(dict.fromkeys(source_ids))
         if not ids:
             return {}
 
         exact = aliased(DocumentChunk)
-        current = aliased(DocumentChunk)
         stmt = (
-            select(MessageSource.id, exact, current)
+            select(MessageSource.id, exact)
             .join(ConversationMessage, ConversationMessage.id == MessageSource.message_id)
             .join(Conversation, Conversation.id == ConversationMessage.conversation_id)
             .outerjoin(
@@ -341,16 +335,7 @@ class ConversationRepository:
                 and_(
                     exact.id == MessageSource.chunk_id,
                     exact.document_id == Document.id,
-                    exact.index_generation == MessageSource.index_generation,
                     exact.logical_key == MessageSource.logical_key,
-                ),
-            )
-            .outerjoin(
-                current,
-                and_(
-                    current.document_id == Document.id,
-                    current.index_generation == Document.index_generation,
-                    current.logical_key == MessageSource.logical_key,
                 ),
             )
             .where(
@@ -359,13 +344,6 @@ class ConversationRepository:
             )
         )
         resolved: dict[uuid.UUID, ResolvedSource] = {}
-        for source_id, exact_chunk, current_chunk in (await self.session.execute(stmt)).all():
-            if exact_chunk is not None:
-                resolved[source_id] = ResolvedSource(source_id, exact_chunk, relocated=False)
-            else:
-                resolved[source_id] = ResolvedSource(
-                    source_id,
-                    current_chunk,
-                    relocated=current_chunk is not None,
-                )
+        for source_id, exact_chunk in (await self.session.execute(stmt)).all():
+            resolved[source_id] = ResolvedSource(source_id, exact_chunk, relocated=False)
         return resolved

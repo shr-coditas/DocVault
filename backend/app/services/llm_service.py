@@ -121,7 +121,7 @@ class LangChainChatModel:
         return Completion(
             # content is a str for a plain text reply, but the type allows a list
             # of content blocks; str() keeps one shape reaching the caller
-            #response.content if isinstance(response.content, str) else str(response.content)
+            # response.content if isinstance(response.content, str) else str(response.content)
             text=response.text,
             model=self.model_name,
             input_tokens=usage.get("input_tokens"),

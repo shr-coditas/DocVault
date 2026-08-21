@@ -56,7 +56,12 @@ async def run_workflow(
     the thing that stops a turn, something upstream is wrong.
     """
     state = await get_graph().ainvoke(
-        {"messages": [*serialize_conversation(past_conversation_history), HumanMessage(content=user_question)]},
+        {
+            "messages": [
+                *serialize_conversation(past_conversation_history),
+                HumanMessage(content=user_question),
+            ]
+        },
         context=context,
         config={"recursion_limit": context.settings.agent_max_steps},
     )

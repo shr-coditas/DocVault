@@ -27,7 +27,6 @@ def upgrade() -> None:
         sa.Column("file_name", sa.String(length=255), nullable=False),
         sa.Column("mime_type", sa.String(length=255), nullable=False),
         sa.Column("size_bytes", sa.BigInteger(), nullable=False),
-        sa.Column("checksum_sha256", sa.String(length=64), nullable=False),
         sa.Column("storage_key", sa.String(length=1024), nullable=False),
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column(

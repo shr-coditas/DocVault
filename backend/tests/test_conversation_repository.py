@@ -74,7 +74,6 @@ def _document(
     marker: str,
     visibility: DocumentVisibility = DocumentVisibility.WORKSPACE,
     deleted_at: datetime | None = None,
-    generation: int = 0,
 ) -> Document:
     return Document(
         id=uuid7(),
@@ -85,13 +84,10 @@ def _document(
         file_name=f"{marker}.txt",
         mime_type="text/plain",
         size_bytes=10,
-        checksum_sha256=marker.ljust(64, "0")[:64],
         storage_key=f"tests/{uuid7()}/{marker}.txt",
         visibility=visibility,
         deleted_at=deleted_at,
-        indexed=generation > 0,
-        index_generation=generation,
-        active_embedding_profile="test-profile" if generation > 0 else None,
+        indexed=False,
     )
 
 
@@ -297,7 +293,6 @@ async def test_conversation_cascades_but_document_history_does_not(
         message_id=assistant.id,
         document_id=seeded.visible.id,
         chunk_id=uuid7(),
-        index_generation=1,
         logical_key="section:0/chunk:0",
         document_title_snapshot=seeded.visible.title,
         heading=None,
@@ -409,7 +404,6 @@ async def test_citation_requires_a_source_supplied_to_the_model(
             message_id=assistant.id,
             document_id=seeded.visible.id,
             chunk_id=uuid7(),
-            index_generation=1,
             logical_key="document/chunk:0",
             document_title_snapshot=seeded.visible.title,
             heading=None,
@@ -427,13 +421,11 @@ async def test_citation_requires_a_source_supplied_to_the_model(
     await session.rollback()
 
 
-def _index_run(document: Document, generation: int) -> DocumentIndexRun:
+def _index_run(document: Document) -> DocumentIndexRun:
     return DocumentIndexRun(
         id=uuid7(),
         workspace_id=document.workspace_id,
         document_id=document.id,
-        target_generation=generation,
-        source_checksum=document.checksum_sha256,
         extractor_profile="test-extractor",
         normalizer_profile="test-normalizer",
         chunker_profile="test-chunker",
@@ -445,13 +437,12 @@ def _index_run(document: Document, generation: int) -> DocumentIndexRun:
     )
 
 
-def _node(run: DocumentIndexRun, generation: int) -> DocumentStructureNode:
+def _node(run: DocumentIndexRun) -> DocumentStructureNode:
     return DocumentStructureNode(
         id=uuid7(),
         run_id=run.id,
         workspace_id=run.workspace_id,
         document_id=run.document_id,
-        index_generation=generation,
         parent_id=None,
         logical_path="document",
         ordinal=0,
@@ -461,21 +452,19 @@ def _node(run: DocumentIndexRun, generation: int) -> DocumentStructureNode:
         source_spans=[],
         attributes={},
         confidence=1.0,
-        content_hash=str(generation).ljust(64, "0"),
+        content_hash="node".ljust(64, "0"),
     )
 
 
 def _chunk(
     run: DocumentIndexRun,
     node: DocumentStructureNode,
-    generation: int,
 ) -> DocumentChunk:
     return DocumentChunk(
         id=uuid7(),
         run_id=run.id,
         document_id=run.document_id,
         workspace_id=run.workspace_id,
-        index_generation=generation,
         logical_key="document/chunk:0",
         chunk_index=0,
         structural_node_id=node.id,
@@ -484,15 +473,15 @@ def _chunk(
         chunk_type="paragraph_chunk",
         heading_path=[],
         breadcrumb=None,
-        content=f"generation {generation}",
-        embedding_text=f"generation {generation}",
-        lexical_text=f"generation {generation}",
+        content="indexed content",
+        embedding_text="indexed content",
+        lexical_text="indexed content",
         embedding_token_count=2,
         page_start=None,
         page_end=None,
         source_spans=[],
         language="en",
-        content_hash=str(generation).ljust(64, "0"),
+        content_hash="chunk".ljust(64, "0"),
         chunk_metadata={},
         embedding_profile_id="test-profile",
         embedding_model="test-model",
@@ -500,29 +489,26 @@ def _chunk(
     )
 
 
-async def test_source_resolution_falls_back_to_logical_key_after_reindex(
+async def test_source_resolution_uses_exact_chunk_and_survives_source_deletion(
     session: AsyncSession,
 ) -> None:
     seeded = await _seed(session)
     document = _document(
         workspace_id=seeded.workspace.id,
         owner_id=seeded.owner.id,
-        marker="versioned",
-        generation=2,
+        marker="indexed",
     )
+    document.indexed = True
     session.add(document)
     await session.flush()
-    old_run = _index_run(document, 1)
-    current_run = _index_run(document, 2)
-    session.add_all([old_run, current_run])
+    run = _index_run(document)
+    session.add(run)
     await session.flush()
-    old_node = _node(old_run, 1)
-    current_node = _node(current_run, 2)
-    session.add_all([old_node, current_node])
+    node = _node(run)
+    session.add(node)
     await session.flush()
-    old_chunk = _chunk(old_run, old_node, 1)
-    current_chunk = _chunk(current_run, current_node, 2)
-    session.add_all([old_chunk, current_chunk])
+    chunk = _chunk(run, node)
+    session.add(chunk)
 
     conversation = _conversation(seeded)
     session.add(conversation)
@@ -532,9 +518,8 @@ async def test_source_resolution_falls_back_to_logical_key_after_reindex(
         id=uuid7(),
         message_id=assistant.id,
         document_id=document.id,
-        chunk_id=old_chunk.id,
-        index_generation=1,
-        logical_key=old_chunk.logical_key,
+        chunk_id=chunk.id,
+        logical_key=chunk.logical_key,
         document_title_snapshot=document.title,
         heading=None,
         breadcrumb=None,
@@ -550,19 +535,10 @@ async def test_source_resolution_falls_back_to_logical_key_after_reindex(
     repository = ConversationRepository(session)
     exact = await repository.resolve_source_chunks([source.id], workspace_id=seeded.workspace.id)
     assert exact[source.id].chunk is not None
-    assert exact[source.id].chunk.id == old_chunk.id
+    assert exact[source.id].chunk.id == chunk.id
     assert exact[source.id].relocated is False
 
-    await session.delete(old_run)
-    await session.commit()
-    relocated = await repository.resolve_source_chunks(
-        [source.id], workspace_id=seeded.workspace.id
-    )
-    assert relocated[source.id].chunk is not None
-    assert relocated[source.id].chunk.id == current_chunk.id
-    assert relocated[source.id].relocated is True
-
-    await session.delete(document)
+    await session.delete(run)
     await session.commit()
     unresolved = await repository.resolve_source_chunks(
         [source.id], workspace_id=seeded.workspace.id

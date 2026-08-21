@@ -113,7 +113,6 @@ class ExtractedArtifact:
     nodes: tuple[DocumentNode, ...]
     parser_name: str
     parser_version: str
-    source_checksum: str
     metadata: dict[str, object] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     quality_metrics: dict[str, object] = field(default_factory=dict)
@@ -248,7 +247,6 @@ class SearchHit:
     chunk_type: ChunkType = "paragraph_chunk"
     breadcrumb: str | None = None
     logical_key: str = ""
-    index_generation: int = 0
     scores: ScoreBreakdown = field(default_factory=ScoreBreakdown)
     structural_node_id: uuid.UUID | None = None
     parent_node_id: uuid.UUID | None = None
@@ -407,7 +405,6 @@ class Citation:
     chunk_id: uuid.UUID
     heading: str | None = None
     source_spans: tuple[ChunkSourceSpan, ...] = ()
-    index_generation: int = 0
     logical_key: str = ""
 
     @property

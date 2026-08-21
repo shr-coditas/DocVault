@@ -10,7 +10,7 @@ import pytest
 from langchain_core.runnables import Runnable
 
 from app.ai import prompts
-from app.ai.agent.prompt_utils import Supervision
+from app.ai.agent.llm_response_dto import Supervision
 from app.config import Settings
 from app.models.user import User
 from app.services.ai_types import (
@@ -62,23 +62,21 @@ def hit(
     score: float = 0.91,
     content: str = "Employees may carry over five leave days.",
     document_id: uuid.UUID | None = None,
+    chunk_id: uuid.UUID | None = None,
     title: str = "Leave policy",
     file_name: str = "leave.pdf",
     logical_key: str = "leave/carry-over",
 ) -> SearchHit:
     return SearchHit(
-        # (document_id, index_generation, logical_key) is the stable source
-        # identity the graph merges on, so tests control it rather than chunk_id.
         document_id=document_id or uuid.uuid4(),
         document_title=title,
         file_name=file_name,
-        chunk_id=uuid.uuid4(),
+        chunk_id=chunk_id or uuid.uuid4(),
         chunk_index=0,
         content=content,
         score=score,
         mode=SearchMode.HYBRID,
         logical_key=logical_key,
-        index_generation=3,
         scores=ScoreBreakdown(semantic=0.8, lexical=0.7, fusion=0.03, rerank=score),
     )
 
@@ -334,8 +332,19 @@ async def test_a_second_search_adds_to_the_evidence_rather_than_replacing_it() -
 
 async def test_the_same_passage_found_twice_is_offered_once() -> None:
     document_id = uuid.uuid4()
-    weak = hit(score=0.40, document_id=document_id, logical_key="leave/cap")
-    strong = hit(score=0.95, document_id=document_id, logical_key="leave/cap")
+    chunk_id = uuid.uuid4()
+    weak = hit(
+        score=0.40,
+        document_id=document_id,
+        chunk_id=chunk_id,
+        logical_key="leave/cap",
+    )
+    strong = hit(
+        score=0.95,
+        document_id=document_id,
+        chunk_id=chunk_id,
+        logical_key="leave/cap",
+    )
     result = await run(
         "What is the carry-over cap?",
         supervisor=FakeSupervisor(

@@ -2,7 +2,6 @@
 
 import asyncio
 import csv
-import hashlib
 import io
 import os
 import re
@@ -246,7 +245,6 @@ def _artifact(
         nodes=tuple(builder.nodes),
         parser_name=parser_name,
         parser_version=parser_version,
-        source_checksum=hashlib.sha256(data).hexdigest(),
         metadata={"file_name": file_name},
         warnings=warnings,
         quality_metrics=quality_metrics or {},
@@ -282,10 +280,9 @@ def artifact_from_blocks(
             source_spans=(replace(block.location, heading=current_heading),),
         )
     return ExtractedArtifact(
-        tuple(builder.nodes),
-        "legacy-flat",
-        "1",
-        "",
+        nodes=tuple(builder.nodes),
+        parser_name="legacy-flat",
+        parser_version="1",
         metadata={"document_title": document_title},
     )
 

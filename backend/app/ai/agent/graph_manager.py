@@ -29,9 +29,7 @@ def build_graph() -> Any:
     builder.add_node("write", write)
     builder.add_node("respond", respond)
     builder.add_edge(START, "guard")
-    builder.add_conditional_edges(
-        "guard", route, ["classify", "respond"]
-    ) 
+    builder.add_conditional_edges("guard", route, ["classify", "respond"])
     builder.add_conditional_edges("classify", route, ["supervise", "respond"])
     builder.add_conditional_edges("supervise", route, ["retrieve", "write", "respond"])
     builder.add_edge("retrieve", "supervise")
@@ -47,6 +45,6 @@ def get_graph() -> Any:
 
 def draw_graph() -> str:
     """
-        uv run python -c "from app.ai.agent.graph_manager import draw_graph; print(draw_graph())"
+    uv run python -c "from app.ai.agent.graph_manager import draw_graph; print(draw_graph())"
     """
     return str(get_graph().get_graph().draw_mermaid())

@@ -118,7 +118,7 @@ class DocumentRepository:
         *,
         limit: int,
         workspace_id: uuid.UUID | None = None,
-        max_attempts: int | None = None,
+        include_failed: bool = False,
     ) -> list[uuid.UUID]:
         """Documents the indexing script should pick up, oldest first.
 
@@ -134,9 +134,8 @@ class DocumentRepository:
         )
         if workspace_id is not None:
             stmt = stmt.where(Document.workspace_id == workspace_id)
-        if max_attempts is not None:
-            # stops one unparseable file consuming every future run
-            stmt = stmt.where(Document.index_attempts < max_attempts)
+        if not include_failed:
+            stmt = stmt.where(Document.index_error.is_(None))
         return list((await self.session.execute(stmt)).scalars())
 
     async def claim_for_indexing(self, document_id: uuid.UUID) -> Document | None:

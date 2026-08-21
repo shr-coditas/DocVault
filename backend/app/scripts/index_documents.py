@@ -61,7 +61,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--retry-failed",
         action="store_true",
-        help="also retry documents that have already failed max_index_attempts times",
+        help="also retry documents that have already failed indexing (default: only unindexed, never-failed)",
     )
     return parser.parse_args()
 
@@ -71,13 +71,12 @@ async def _run(args: argparse.Namespace) -> int:
     configure_logging(settings)
 
     limit = args.limit if args.limit is not None else settings.index_batch_limit
-    max_attempts = None if args.retry_failed else settings.max_index_attempts
 
     async with async_session_factory() as session:
         pending = await DocumentRepository(session).unindexed_ids(
             limit=limit,
             workspace_id=args.workspace_id,
-            max_attempts=max_attempts,
+            include_failed=args.retry_failed,
         )
 
     if not pending:

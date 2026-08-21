@@ -24,17 +24,12 @@ EMBEDDING_DIMENSIONS = 384
 
 
 def upgrade() -> None:
-    op.add_column(
-        "documents", sa.Column("active_embedding_profile", sa.String(length=255), nullable=True)
-    )
     op.create_unique_constraint("uq_documents_id", "documents", ["id", "workspace_id"])
 
     op.create_table(
         "document_index_runs",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
         sa.Column("document_id", sa.Uuid(), nullable=False),
-        sa.Column("target_generation", sa.Integer(), nullable=False),
-        sa.Column("source_checksum", sa.String(length=64), nullable=False),
         sa.Column("extractor_profile", sa.String(length=255), nullable=False),
         sa.Column("normalizer_profile", sa.String(length=255), nullable=False),
         sa.Column("chunker_profile", sa.String(length=255), nullable=False),
@@ -68,7 +63,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_document_index_runs")),
         sa.UniqueConstraint(
             "document_id",
-            "target_generation",
             name=op.f("uq_document_index_runs_document_id"),
         ),
         sa.UniqueConstraint("lease_token", name=op.f("uq_document_index_runs_lease_token")),
@@ -77,9 +71,6 @@ def upgrade() -> None:
         "status",
         "document_index_runs",
         "status in ('claimed', 'extracting', 'chunking', 'embedding', 'staged', 'active', 'failed')",
-    )
-    op.create_check_constraint(
-        "target_generation_positive", "document_index_runs", "target_generation > 0"
     )
     op.create_index(
         "ix_document_index_runs_status_lease",
@@ -92,7 +83,6 @@ def upgrade() -> None:
         sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
         sa.Column("document_id", sa.Uuid(), nullable=False),
-        sa.Column("index_generation", sa.Integer(), nullable=False),
         sa.Column("parent_id", sa.Uuid(), nullable=True),
         sa.Column("logical_path", sa.String(length=1024), nullable=False),
         sa.Column("ordinal", sa.Integer(), nullable=False),
@@ -137,9 +127,9 @@ def upgrade() -> None:
     )
     op.create_index("ix_document_nodes_parent_ordinal", "document_nodes", ["parent_id", "ordinal"])
     op.create_index(
-        "ix_document_nodes_document_generation",
+        "ix_document_nodes_document",
         "document_nodes",
-        ["workspace_id", "document_id", "index_generation"],
+        ["workspace_id", "document_id"],
     )
 
     op.create_table(
@@ -147,7 +137,6 @@ def upgrade() -> None:
         sa.Column("run_id", sa.Uuid(), nullable=False),
         sa.Column("document_id", sa.Uuid(), nullable=False),
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
-        sa.Column("index_generation", sa.Integer(), nullable=False),
         sa.Column("logical_key", sa.String(length=1024), nullable=False),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("structural_node_id", sa.Uuid(), nullable=False),
@@ -209,7 +198,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_document_chunks")),
         sa.UniqueConstraint(
             "document_id",
-            "index_generation",
             "logical_key",
             name=op.f("uq_document_chunks_document_id"),
         ),
@@ -219,9 +207,9 @@ def upgrade() -> None:
         "ordinal_in_parent_non_negative", "document_chunks", "ordinal_in_parent >= 0"
     )
     op.create_index(
-        "ix_document_chunks_document_generation",
+        "ix_document_chunks_document",
         "document_chunks",
-        ["workspace_id", "document_id", "index_generation", "chunk_index"],
+        ["workspace_id", "document_id", "chunk_index"],
     )
     op.create_index(
         "ix_document_chunks_parent_ordinal",
@@ -251,4 +239,3 @@ def downgrade() -> None:
     op.drop_table("document_nodes")
     op.drop_table("document_index_runs")
     op.drop_constraint("uq_documents_id", "documents", type_="unique")
-    op.drop_column("documents", "active_embedding_profile")

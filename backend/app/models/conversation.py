@@ -184,16 +184,13 @@ class MessageSource(UUIDPrimaryKeyMixin, Base):
         sa.UniqueConstraint("message_id", "retrieval_rank", name="uq_message_sources_message_rank"),
         sa.UniqueConstraint(
             "message_id",
-            "document_id",
-            "index_generation",
-            "logical_key",
-            name="uq_message_sources_message_logical_source",
+            "chunk_id",
+            name="uq_message_sources_message_chunk",
         ),
         sa.UniqueConstraint(
             "message_id", "citation_marker", name="uq_message_sources_message_citation"
         ),
         sa.CheckConstraint("retrieval_rank > 0", name="retrieval_rank_positive"),
-        sa.CheckConstraint("index_generation > 0", name="index_generation_positive"),
         sa.CheckConstraint(
             "citation_marker is null or citation_marker > 0", name="citation_marker_positive"
         ),
@@ -206,7 +203,6 @@ class MessageSource(UUIDPrimaryKeyMixin, Base):
     message_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("messages.id", ondelete="CASCADE"))
     document_id: Mapped[uuid.UUID]
     chunk_id: Mapped[uuid.UUID]
-    index_generation: Mapped[int]
     logical_key: Mapped[str] = mapped_column(sa.String(1024))
     document_title_snapshot: Mapped[str] = mapped_column(sa.String(255))
     heading: Mapped[str | None] = mapped_column(sa.Text)
