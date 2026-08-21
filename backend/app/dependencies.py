@@ -11,7 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langchain_core.runnables import Runnable
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.agent import build_supervisor
+from app.ai.agent import create_decision_model
 from app.config import get_settings
 from app.db.session import get_db
 from app.exceptions import UnauthorizedError
@@ -85,7 +85,7 @@ def get_supervisor() -> Runnable[Any, Any]:
     Cached because it holds a provider client and nothing request-specific;
     building one per request would re-handshake on every question.
     """
-    return build_supervisor(get_settings())
+    return create_decision_model(get_settings())
 
 
 SupervisorDep = Annotated[Runnable[Any, Any], Depends(get_supervisor)]

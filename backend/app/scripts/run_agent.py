@@ -35,7 +35,7 @@ from langchain_core.runnables import Runnable
 from app.ai.agent.agent_manager import Context, State
 from app.ai.agent.graph_manager import get_graph
 from app.ai.agent.prompt_utils import Supervision
-from app.ai.agent.workflow_manager import as_messages, build_supervisor
+from app.ai.agent.workflow_manager import serialize_conversation, create_decision_model
 from app.config import get_settings
 from app.db.session import async_session_factory, dispose_engine
 from app.repository.user_repository import UserRepository
@@ -138,7 +138,7 @@ async def _run(args: argparse.Namespace) -> int:
             # Duck-typed on purpose: the graph only ever calls `ainvoke`.
             supervisor=cast(
                 Runnable[Any, Any],
-                OfflineSupervisor() if args.offline else build_supervisor(settings),
+                OfflineSupervisor() if args.offline else create_decision_model(settings),
             ),
             settings=settings,
             document_ids=tuple(args.document_id) if args.document_id else None,
@@ -150,7 +150,7 @@ async def _run(args: argparse.Namespace) -> int:
         # arrives as it is produced, which is what makes a loop legible.
         final: State | None = None
         async for step in get_graph().astream(
-            {"messages": [*as_messages(history), HumanMessage(content=args.question)]},
+            {"messages": [*serialize_conversation(history), HumanMessage(content=args.question)]},
             context=context,
             config={"recursion_limit": settings.agent_max_steps},
             stream_mode="updates",

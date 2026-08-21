@@ -8,29 +8,18 @@ from langchain_core.runnables import Runnable
 
 from app.ai.agent.agent_manager import Context
 from app.ai.agent.graph_manager import get_graph
-from app.ai.agent.prompt_utils import Supervision
+from app.ai.agent.llm_response_dto import Supervision
 from app.config import Settings
 from app.services.ai_types import ConversationTurn, QueryOutcome
 
 
-def build_supervisor(settings: Settings) -> Runnable[Any, Any]:
-    """A chat model pinned to the ``Supervision`` schema.
-
-    Imported lazily so the API starts, and the linear pipeline runs, on a
-    deployment with no provider key. The falls-back-to-the-answering-model
-    defaults are deliberate: the supervisor wants a fast model with reliable
-    structured output and the answerer wants a good writer, but one key and one
-    model is a perfectly reasonable place to start.
-    """
+def create_decision_model(settings: Settings) -> Runnable[Any, Any]:
     from langchain.chat_models import init_chat_model
 
     provider = settings.llm_provider
     credentials: dict[str, Any] = {}
     if provider == "google_genai" and settings.google_studio_api_key:
         credentials["api_key"] = settings.google_studio_api_key
-    # if provider == "groq" and settings.groq_api_key:
-    #     credentials["api_key"] = settings.groq_api_key
-
     model = init_chat_model(
         model=settings.llm_model,
         model_provider=provider,
@@ -41,7 +30,7 @@ def build_supervisor(settings: Settings) -> Runnable[Any, Any]:
     return model.with_structured_output(Supervision)
 
 
-def as_messages(history: Sequence[ConversationTurn]) -> list[AnyMessage]:
+def serialize_conversation(history: Sequence[ConversationTurn]) -> list[AnyMessage]:
     """The conversation as the graph carries it, oldest first.
 
     The caller has already narrowed this to turns whose sources this actor can
@@ -56,8 +45,8 @@ def as_messages(history: Sequence[ConversationTurn]) -> list[AnyMessage]:
 
 
 async def run_workflow(
-    question: str,
-    history: Sequence[ConversationTurn],
+    user_question: str,
+    past_conversation_history: Sequence[ConversationTurn],
     context: Context,
 ) -> QueryOutcome:
     """Run one query turn and return what to tell the caller.
@@ -67,7 +56,7 @@ async def run_workflow(
     the thing that stops a turn, something upstream is wrong.
     """
     state = await get_graph().ainvoke(
-        {"messages": [*as_messages(history), HumanMessage(content=question)]},
+        {"messages": [*serialize_conversation(past_conversation_history), HumanMessage(content=user_question)]},
         context=context,
         config={"recursion_limit": context.settings.agent_max_steps},
     )
