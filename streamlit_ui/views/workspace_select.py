@@ -32,7 +32,11 @@ def _confirm_delete_workspace(ws: dict[str, Any]) -> None:
             return
         # we may have been standing in it
         if st.session_state.get("current_workspace_id") == ws["id"]:
-            for key in ("current_workspace_id", "selected_document_id", "doc_bytes_cache"):
+            for key in (
+                "current_workspace_id",
+                "selected_document_id",
+                "doc_bytes_cache",
+            ):
                 st.session_state.pop(key, None)
         st.rerun()
 

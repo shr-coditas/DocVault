@@ -86,9 +86,7 @@ for team in teams:
         else:
             st.caption("Every workspace member is already on this team.")
 
-        if st.button(
-            "🗑️ Delete team", key=f"tm-del-{team['id']}", width="stretch"
-        ):
+        if st.button("🗑️ Delete team", key=f"tm-del-{team['id']}", width="stretch"):
             try:
                 api.delete_team(workspace_id, team["id"])
                 st.rerun()

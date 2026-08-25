@@ -86,7 +86,10 @@ def remember(refresh_token: str) -> None:
         sid = secrets.token_urlsafe(32)
         st.session_state["_sid"] = sid
         st.session_state[_PENDING_WRITE] = sid
-    store[sid] = {"refresh_token": refresh_token, "expires_at": time.time() + _TTL_SECONDS}
+    store[sid] = {
+        "refresh_token": refresh_token,
+        "expires_at": time.time() + _TTL_SECONDS,
+    }
 
 
 def forget() -> None:
