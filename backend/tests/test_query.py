@@ -50,9 +50,7 @@ from tests.helpers import (
 
 pytestmark = pytest.mark.integration
 
-SETTINGS = Settings(
-    chunk_target_tokens=40, chunk_max_tokens=60, chunk_overlap_tokens=8, chunk_min_tokens=5
-)
+SETTINGS = Settings(chunk_max_tokens=60)
 
 
 @dataclass

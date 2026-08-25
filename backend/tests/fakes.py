@@ -19,13 +19,15 @@ from app.services.ai_types import (
 )
 from app.services.contextual_query_service import ResolverUnavailableError
 from app.services.llm_service import Completion, LLMUnavailableError
-from app.services.reranking_service import IdentityReranker
 
 DIMENSIONS = 384
 
 
-class FakeReranker(IdentityReranker):
-    pass
+class FakeReranker:
+    model_name = "identity"
+
+    async def rerank(self, query: str, passages: Sequence[str]) -> list[float]:
+        return [float(len(passages) - index) for index in range(len(passages))]
 
 
 def _tokens(text: str) -> list[str]:

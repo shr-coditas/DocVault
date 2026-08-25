@@ -1,7 +1,7 @@
 """Permission-filtered semantic, lexical, and hybrid retrieval."""
 
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import cast
 
 import structlog
@@ -19,11 +19,10 @@ from app.services.ai_types import (
     SearchHit,
     SearchMode,
     SearchResult,
-    source_spans_from_json,
 )
 from app.services.document_access import document_access_filter
-from app.services.embedding_service import Embedder
-from app.services.reranking_service import Reranker
+from app.services.embedding_service import FastEmbedEmbedder
+from app.services.reranking_service import FastEmbedReranker
 
 logger = structlog.stdlib.get_logger("docvault.search")
 MAX_LIMIT = 50
@@ -51,9 +50,9 @@ class SearchService:
     def __init__(
         self,
         session: AsyncSession,
-        embedder: Embedder,
+        embedder: FastEmbedEmbedder,
         settings: Settings | None = None,
-        reranker: Reranker | None = None,
+        reranker: FastEmbedReranker | None = None,
     ) -> None:
         self.session = session
         self.embedder = embedder
@@ -112,13 +111,11 @@ class SearchService:
             )
 
         candidates = self._fuse(mode, semantic_rows, lexical_rows)
-        candidates = self._deduplicate(candidates)
         if mode is SearchMode.HYBRID and self.reranker is not None:
             candidates = await self._rerank(query, candidates)
         candidates = self._diversify(candidates, single_document=len(scope) == 1)
         selected = candidates[:effective_limit]
         hits = tuple(self._to_hit(candidate, mode) for candidate in selected)
-        hits = await self._expand_continuations(hits, workspace_id=workspace_id, access=access)
 
         logger.info(
             "search",
@@ -178,43 +175,11 @@ class SearchService:
             : self.settings.search_fusion_limit
         ]
 
-    def _deduplicate(self, candidates: list[_Candidate]) -> list[_Candidate]:
-        selected: list[_Candidate] = []
-        hashes: set[tuple[uuid.UUID, str]] = set()
-        for candidate in candidates:
-            key = (candidate.document.id, candidate.chunk.content_hash)
-            if key in hashes:
-                continue
-            if any(
-                self._source_overlap(candidate, previous)
-                >= self.settings.search_source_overlap_threshold
-                for previous in selected
-            ):
-                continue
-            hashes.add(key)
-            selected.append(candidate)
-        return selected
-
-    @staticmethod
-    def _source_overlap(left: _Candidate, right: _Candidate) -> float:
-        if left.document.id != right.document.id:
-            return 0.0
-        if left.chunk.page_start is None or right.chunk.page_start is None:
-            return 0.0
-        left_pages = set(
-            range(left.chunk.page_start, (left.chunk.page_end or left.chunk.page_start) + 1)
-        )
-        right_pages = set(
-            range(right.chunk.page_start, (right.chunk.page_end or right.chunk.page_start) + 1)
-        )
-        union = left_pages | right_pages
-        return len(left_pages & right_pages) / len(union) if union else 0.0
-
     async def _rerank(self, query: str, candidates: list[_Candidate]) -> list[_Candidate]:
         head = candidates[: self.settings.search_rerank_limit]
         tail = candidates[self.settings.search_rerank_limit :]
         passages = [
-            "\n".join(part for part in (row.chunk.breadcrumb, row.chunk.content) if part)
+            "\n".join(part for part in (row.chunk.section_path, row.chunk.content) if part)
             for row in head
         ]
         scores = await self.reranker.rerank(query, passages) if self.reranker else []
@@ -251,54 +216,13 @@ class SearchService:
             chunk_index=chunk.chunk_index,
             content=chunk.content,
             score=candidate.final_score,
-            token_count=chunk.embedding_token_count,
-            heading=chunk.heading_path[-1] if chunk.heading_path else None,
-            source_spans=source_spans_from_json(chunk.source_spans),
             mode=mode,
             chunk_type=cast(ChunkType, chunk.chunk_type),
-            breadcrumb=chunk.breadcrumb,
-            logical_key=chunk.logical_key,
+            section_path=chunk.section_path,
             scores=ScoreBreakdown(
                 semantic=candidate.semantic,
                 lexical=candidate.lexical,
                 fusion=candidate.fusion,
                 rerank=candidate.rerank,
             ),
-            structural_node_id=chunk.structural_node_id,
-            parent_node_id=chunk.parent_node_id,
-            ordinal_in_parent=chunk.ordinal_in_parent,
-            content_hash=chunk.content_hash,
-            metadata=chunk.chunk_metadata,
         )
-
-    async def _expand_continuations(
-        self,
-        hits: tuple[SearchHit, ...],
-        *,
-        workspace_id: uuid.UUID,
-        access: tuple[uuid.UUID, list[uuid.UUID]] | None,
-    ) -> tuple[SearchHit, ...]:
-        expanded = []
-        for hit in hits:
-            if hit.parent_node_id is None or not (
-                hit.metadata.get("continuation_before") or hit.metadata.get("continuation_after")
-            ):
-                expanded.append(hit)
-                continue
-            neighbors = await self.chunks.structural_neighbors(
-                workspace_id=workspace_id,
-                document_id=hit.document_id,
-                parent_node_id=hit.parent_node_id,
-                ordinal=hit.ordinal_in_parent,
-                access=access,
-            )
-            before = [row for row in neighbors if row.ordinal_in_parent < hit.ordinal_in_parent]
-            after = [row for row in neighbors if row.ordinal_in_parent > hit.ordinal_in_parent]
-            content = _JOINER.join(
-                [*(row.content for row in before), hit.content, *(row.content for row in after)]
-            )
-            expanded.append(replace(hit, content=content))
-        return tuple(expanded)
-
-
-_JOINER = "\n\n"

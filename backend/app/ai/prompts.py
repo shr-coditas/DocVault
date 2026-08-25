@@ -1,42 +1,3 @@
-"""Prompts, kept in one file so they can be diffed, reviewed, and iterated on.
-
-A prompt scattered across f-strings in a service is a prompt nobody can improve:
-you cannot see the whole thing, you cannot diff a change to it, and you cannot
-tell which wording produced which eval score. This module is the single place the
-model's instructions live.
-
-# ITERATION NOTES
-#
-# Keep this log honest - including the things that did not work. It is the only
-# record of *why* the prompt says what it says, and without it the next person
-# (or the next you) re-learns the same lessons by deleting a line that was
-# load-bearing.
-#
-# v1 (2026-07-31, step 7 - this version)
-#   Baseline. Not yet measured: the golden Q&A set and the faithfulness judge
-#   arrive in the evaluation slice, so every claim below is a design intention,
-#   not a result. Do not quote these as findings.
-#
-#   Deliberate choices, and the reasoning behind each:
-#
-#   - Sources are numbered and the model is told to cite as [1], [2]. Numbers
-#     rather than titles because two documents can share a title, and a citation
-#     that cannot be resolved back to a specific chunk is decoration.
-#   - "If the sources do not contain the answer, say so" appears once, plainly,
-#     rather than three times in escalating capitals. The guardrail work in the
-#     previous step showed the same thing the model docs say: repeating an
-#     instruction more forcefully mostly buys overtriggering.
-#   - The system prompt states the corpus is user-supplied and may be wrong or
-#     contradictory. Without that, a model asked to answer "only from the
-#     sources" will smooth over a contradiction rather than report it.
-#   - Sources are wrapped in a delimiter and the model is told that everything
-#     inside is data. Retrieved chunks are untrusted input: a document can
-#     contain "ignore your instructions", and the injection guardrail only sees
-#     the user's question, never the corpus.
-#   - No few-shot examples yet. They would triple the prompt's token cost on
-#     every call, and there is no eval to show they earn it. Revisit with numbers.
-"""
-
 from collections.abc import Sequence
 
 from app.services.ai_types import OutputIssue, SearchHit
@@ -73,21 +34,16 @@ def format_sources(hits: Sequence[SearchHit]) -> str:
     which is why the formatting lives next to the prompt that describes it
     rather than inside the service.
 
-    Provenance (title, page, heading) is included per source because the model
-    is asked to distinguish between documents, and because a citation the user
-    can act on needs a page number more than it needs a chunk id.
+    Each source has a readable document/section/type path. Exact page, line, and
+    character offsets are intentionally outside this beginner-oriented schema.
     """
     blocks = []
     for number, hit in enumerate(hits, start=1):
-        location = [f"document: {hit.document_title}"]
-        if hit.page_numbers:
-            pages = "-".join(str(page) for page in (hit.page_numbers[0], hit.page_numbers[-1]))
-            location.append(f"pages: {pages}" if len(hit.page_numbers) > 1 else f"page: {pages}")
-        if hit.breadcrumb:
-            location.append(f"breadcrumb: {hit.breadcrumb}")
-        elif hit.heading:
-            location.append(f"section: {hit.heading}")
-        blocks.append(f"[{number}] ({', '.join(location)})\n{hit.content.strip()}")
+        location = [hit.document_title]
+        if hit.section_path:
+            location.append(hit.section_path)
+        location.append(hit.chunk_type.title())
+        blocks.append(f"[{number}] {' > '.join(location)}\n{hit.content.strip()}")
     return "\n\n".join(blocks)
 
 
@@ -178,11 +134,6 @@ REJECTED_ANSWER_MESSAGE = (
 )
 
 
-# Fixed sentences for every ending that is not an answer, kept here beside the
-# rest of the user-facing text rather than in the service that happened to need
-# them first. None is a template: nothing the caller typed is echoed back, since
-# a refusal that quotes what it refused is how a refusal becomes a reflection
-# gadget.
 DECLINE_MESSAGE = (
     "DocVault answers questions about the documents in this workspace. "
     "That request is outside what it can help with."

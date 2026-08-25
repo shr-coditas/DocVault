@@ -78,12 +78,7 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     @property
     def search_status(self) -> DocumentSearchStatus:
-        """Expose readiness without leaking internal indexing diagnostics.
-
-        A dirty or failed reindex may leave ``indexed`` false while the previous
-        active generation remains intentionally searchable. The active profile
-        and generation are therefore the stronger readiness signal.
-        """
+        """Expose readiness without leaking internal indexing diagnostics."""
         if self.indexed:
             return DocumentSearchStatus.READY
         if self.index_error:

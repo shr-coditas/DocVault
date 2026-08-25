@@ -101,9 +101,5 @@ def document_prefix(workspace_id: str, document_id: str) -> str:
     return f"ws_{workspace_id}/doc_{document_id}/"
 
 
-def index_artifact_key(workspace_id: str, document_id: str) -> str:
-    return f"{document_prefix(workspace_id, document_id)}index/extraction.json.gz"
-
-
 def document_prefix_from_key(storage_key: str) -> str:
     return f"{storage_key.rsplit('/', 1)[0]}/"

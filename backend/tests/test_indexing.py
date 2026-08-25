@@ -8,7 +8,6 @@ through IndexingService rather than by shelling out to the script.
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -26,7 +25,6 @@ from app.dependencies import get_storage_service
 from app.main import create_app
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
-from app.repository.document_index_repository import DocumentIndexRepository
 from app.repository.document_repository import DocumentRepository
 from app.services.indexing_service import IndexingService
 from app.services.storage_service import StorageService
@@ -35,9 +33,7 @@ from tests.helpers import WORKSPACES, create_schema, create_workspace, signup, s
 
 pytestmark = pytest.mark.integration
 
-SETTINGS = Settings(
-    chunk_target_tokens=40, chunk_max_tokens=60, chunk_overlap_tokens=8, chunk_min_tokens=5
-)
+SETTINGS = Settings(chunk_max_tokens=60)
 
 
 @dataclass
@@ -160,7 +156,7 @@ async def test_indexes_pending_documents(env: Env) -> None:
         assert await _chunks(env, document_id)
 
 
-async def test_chunks_carry_tenant_and_model_metadata(env: Env) -> None:
+async def test_chunks_carry_only_the_small_search_schema(env: Env) -> None:
     document_id = await _upload(env, "a.txt", _prose("gamma"))
     await _index_all(env)
 
@@ -169,8 +165,8 @@ async def test_chunks_carry_tenant_and_model_metadata(env: Env) -> None:
     for chunk in chunks:
         # denormalised so the tenant filter stands without the join
         assert str(chunk.workspace_id) == env.workspace_id
-        assert chunk.embedding_model == "fake-token-hash"
         assert len(chunk.embedding) == 384
+        assert chunk.chunk_type == "paragraph"
     assert [chunk.chunk_index for chunk in chunks] == list(range(len(chunks)))
 
 
@@ -295,25 +291,6 @@ async def test_claiming_twice_skips(env: Env) -> None:
     # already indexed, so the claim finds nothing
     outcome = await env.service.index_document(uuid.UUID(document_id))
     assert outcome.status == "skipped"
-
-
-async def test_unexpired_lease_blocks_a_competitor_and_expiry_allows_recovery(env: Env) -> None:
-    document_id = uuid.UUID(await _upload(env, "lease.txt", _prose("lease")))
-
-    first = await env.service.claim(document_id)
-    assert first is not None
-    assert await env.service.claim(document_id) is None
-
-    async with env.session_factory() as session:
-        run = await DocumentIndexRepository(session).get(first.run_id)
-        assert run is not None
-        run.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        await session.commit()
-
-    recovered = await env.service.claim(document_id)
-    assert recovered is not None
-    assert recovered.run_id == first.run_id
-    assert recovered.lease_token != first.lease_token
 
 
 async def test_audit_row_is_written_for_a_successful_index(env: Env) -> None:

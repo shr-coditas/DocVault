@@ -58,7 +58,7 @@ class Completion:
 
 
 class ChatModel(Protocol):
-    """Structural, so the test double needs no inheritance and no LangChain."""
+    """The generation contract shared by real and offline model adapters."""
 
     model_name: str
 
@@ -81,15 +81,10 @@ class LangChainChatModel:
         feature.
         """
         if self._model is None:
-            # imported lazily for the same reason: LangChain is a heavy import
-            # and the test suite never touches this path
             from langchain.chat_models import init_chat_model
 
             credentials: dict[str, Any] = {}
-            # if self.settings.groq_api_key:
-            #     credentials["api_key"] = self.settings.groq_api_key
-            if self.settings.google_studio_api_key:
-                credentials["api_key"] = self.settings.google_studio_api_key
+            credentials["api_key"] = self.settings.google_studio_api_key
             self._model = init_chat_model(
                 model=self.settings.llm_model,
                 model_provider=self.settings.llm_provider,

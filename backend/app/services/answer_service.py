@@ -8,8 +8,7 @@ passages the asking user is allowed to see.
 
 Three jobs, in order:
 
-1. **Budget.** Take sources best-first until the token budget or the source cap
-   is reached. Retrieval already ranked them; this only decides how many fit.
+1. **Select.** Take sources best-first up to the configured source cap.
 2. **Generate.** One call, through the ``ChatModel`` seam.
 3. **Resolve citations.** Parse the bracketed markers the model wrote and map
    them back to the sources actually supplied, dropping any that do not resolve.
@@ -41,10 +40,6 @@ from app.services.ai_types import (
     SearchHit,
 )
 from app.services.llm_service import ChatModel, LLMUnavailableError
-from app.services.token_counting import (
-    ConservativeGenerationTokenCounter,
-    GenerationTokenCounter,
-)
 
 logger = structlog.stdlib.get_logger("docvault.answer")
 
@@ -59,11 +54,9 @@ class AnswerService:
         self,
         model: ChatModel,
         settings: Settings | None = None,
-        token_counter: GenerationTokenCounter | None = None,
     ) -> None:
         self.model = model
         self.settings = settings or get_settings()
-        self.tokens = token_counter or ConservativeGenerationTokenCounter()
 
     async def draft(
         self,
@@ -163,26 +156,8 @@ class AnswerService:
         the first one - a truncated-but-grounded answer beats refusing to answer
         because one document chunks badly.
         """
-        fixed = self.tokens.count_tokens(prompts.SYSTEM_PROMPT) + self.tokens.count_tokens(question)
-        window_budget = max(
-            0,
-            self.settings.llm_context_window_tokens
-            - self.settings.llm_reserved_output_tokens
-            - fixed,
-        )
-        budget = min(self.settings.answer_context_token_budget, window_budget)
-        selected: list[SearchHit] = []
-        spent = 0
-        for hit in hits:
-            if len(selected) >= self.settings.answer_max_sources:
-                break
-            rendered_tokens = self.tokens.count_tokens(prompts.format_sources([hit]))
-            if selected and spent + rendered_tokens > budget:
-                # keep going: a later, smaller chunk may still fit
-                continue
-            selected.append(hit)
-            spent += rendered_tokens
-        return selected
+        del question
+        return list(hits[: self.settings.answer_max_sources])
 
     @staticmethod
     def resolve_citations(text: str, sources: Sequence[SearchHit]) -> tuple[Citation, ...]:
@@ -212,9 +187,8 @@ class AnswerService:
                         document_id=hit.document_id,
                         document_title=hit.document_title,
                         chunk_id=hit.chunk_id,
-                        heading=hit.heading,
-                        source_spans=hit.source_spans,
-                        logical_key=hit.logical_key,
+                        section_path=hit.section_path,
+                        chunk_type=hit.chunk_type,
                     )
                 )
         return tuple(citations)

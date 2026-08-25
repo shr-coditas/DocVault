@@ -43,9 +43,7 @@ from tests.helpers import (
 pytestmark = pytest.mark.integration
 
 # small chunks so a short document still produces several of them
-SETTINGS = Settings(
-    chunk_target_tokens=40, chunk_max_tokens=60, chunk_overlap_tokens=8, chunk_min_tokens=5
-)
+SETTINGS = Settings(chunk_max_tokens=60)
 
 ME = "/api/v1/auth/me"
 
@@ -253,7 +251,8 @@ async def test_hits_carry_the_provenance_a_citation_needs(env: Env) -> None:
     assert uuid.UUID(hit["chunk_id"])
     assert hit["chunk_index"] >= 0
     assert "rugby" in hit["content"]
-    assert hit["page_number"] is None  # txt is not paginated
+    assert hit["section_path"] is None
+    assert hit["chunk_type"] == "paragraph"
     assert -1.0 <= hit["score"] <= 1.0
 
 
@@ -293,7 +292,7 @@ async def test_public_default_is_hybrid_with_component_scores(env: Env) -> None:
     hit = body["hits"][0]
     assert hit["scores"]["fusion"] is not None
     assert hit["scores"]["rerank"] is not None
-    assert hit["logical_key"]
+    assert "section_path" in hit
 
 
 async def test_lexical_mode_does_not_embed_the_query(env: Env) -> None:

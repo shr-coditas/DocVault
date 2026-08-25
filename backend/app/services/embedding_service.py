@@ -1,54 +1,12 @@
-"""Embeddings, behind a Protocol so the provider is swappable.
-
-fastembed runs BAAI/bge-small-en-v1.5 through ONNX Runtime locally: no API key,
-no network at query time, and the test suite runs offline. Swapping to a hosted
-provider is a new class satisfying ``Embedder`` plus an override of
-``dependencies.get_embedder`` - nothing else changes.
-"""
-
-# STUDY NOTE - does this embedder store chunk metadata?
-#
-# No. The embedder is stateless: text in, vectors out. It never touches the
-# database and does not know what a document is.
-#
-# Where the metadata lands is worth being precise about, because the generic
-# answer ("in a separate store") is not what this repo does. IndexingService
-# writes the vector and its metadata to the *same* row of `document_chunks` -
-# content, char_start/char_end, page_number, heading, embedding, and
-# embedding_model side by side. That co-location is the point of choosing
-# pgvector over a dedicated vector database: one SQL statement can filter by
-# permission and rank by cosine distance at once, instead of ranking in one
-# system and filtering in another.
-#
-# The one thing the embedder does own is the asymmetry: bge wants
-# `embedding_query_prefix` on a query and must not have it on a passage, so
-# embed_query applies it and embed_texts does not. No caller can get that wrong.
+"""Local BGE embeddings through FastEmbed."""
 
 import asyncio
 from collections.abc import Sequence
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import Any
 
 from app.config import Settings, get_settings
-
-
-class Embedder(Protocol):
-    """Structural, so a test double needs no inheritance.
-
-    ``embed_texts`` and ``embed_query`` are separate because bge is asymmetric -
-    queries take a prefix that passages must not have. Keeping that inside the
-    implementation means no caller can apply it to the wrong side; a symmetric
-    model simply ignores the distinction.
-    """
-
-    model_name: str
-    dimensions: int
-
-    async def embed_texts(self, texts: Sequence[str]) -> list[list[float]]: ...
-
-    async def embed_query(self, text: str) -> list[float]: ...
-
-    def count_tokens(self, text: str) -> int: ...
+from app.models.document_chunk import EMBEDDING_DIMENSIONS
 
 
 class FastEmbedEmbedder:
@@ -73,10 +31,10 @@ class FastEmbedEmbedder:
         # (embed a throwaway string purely to see how many dimensions come back)
         probe = self._embed_sync(["dimension probe"])
         self.dimensions = len(probe[0])
-        if self.dimensions != self.settings.embedding_dimensions:
+        if self.dimensions != EMBEDDING_DIMENSIONS:
             raise ValueError(
                 f"{self.model_name} produces {self.dimensions}-d vectors but "
-                f"embedding_dimensions is {self.settings.embedding_dimensions}; "
+                f"document_chunks.embedding expects {EMBEDDING_DIMENSIONS}; "
                 "document_chunks.embedding would reject these"
             )
 

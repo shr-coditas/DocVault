@@ -1,4 +1,15 @@
+import os
 from collections.abc import AsyncIterator, Iterator
+
+os.environ.setdefault("CHUNK_MAX_TOKENS", "400")
+os.environ.setdefault("EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+os.environ.setdefault("EMBEDDING_BATCH_SIZE", "32")
+os.environ.setdefault("EMBEDDING_THREADS", "1")
+os.environ.setdefault(
+    "EMBEDDING_QUERY_PREFIX",
+    "Represent this sentence for searching relevant passages: ",
+)
+os.environ.setdefault("ANSWER_MAX_SOURCES", "8")
 
 import pytest
 from httpx import ASGITransport, AsyncClient

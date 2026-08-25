@@ -158,16 +158,10 @@ class QueryService:
                 context_loader=context_loader,
             )
 
-        # Imported here so that API startup, and every request on the linear
-        # path, gets nowhere near LangGraph.
         from app.ai.agent import Context, run_workflow
 
         # The conversation's scope and history are resolved before the graph
-        # starts rather than inside it. History is state, not a step, and the
-        # authorization work behind it - which pinned documents this actor can
-        # still open, which earlier turns cited only documents they can still
-        # read - belongs to the layer that owns the session, not to a node a
-        # model can route around.
+        # starts rather than inside it.
         context = QueryExecutionContext(
             document_ids=tuple(document_ids) if document_ids is not None else None
         )

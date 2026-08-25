@@ -17,14 +17,17 @@ from app.db.session import get_db
 from app.exceptions import UnauthorizedError
 from app.models.user import User
 from app.repository.user_repository import UserRepository
+from app.services.answer_service import AnswerService
 from app.services.contextual_query_service import (
     ContextualQueryResolver,
     get_default_contextual_resolver,
 )
-from app.services.embedding_service import Embedder, get_default_embedder
+from app.services.embedding_service import FastEmbedEmbedder, get_default_embedder
 from app.services.llm_service import ChatModel, get_default_chat_model
 from app.services.permission_service import PermissionService
-from app.services.reranking_service import Reranker, get_default_reranker
+from app.services.query_service import QueryService
+from app.services.reranking_service import FastEmbedReranker, get_default_reranker
+from app.services.search_service import SearchService
 from app.services.storage_service import StorageService
 from app.utils.rbac_catalog import Perm
 from app.utils.security import decode_access_token
@@ -40,20 +43,20 @@ def get_storage_service() -> StorageService:
 StorageDep = Annotated[StorageService, Depends(get_storage_service)]
 
 
-def get_embedder() -> Embedder:
+def get_embedder() -> FastEmbedEmbedder:
     """Embedding seam: tests override this with a deterministic in-process fake,
     so the suite needs no model download and no network."""
     return get_default_embedder()
 
 
-EmbedderDep = Annotated[Embedder, Depends(get_embedder)]
+EmbedderDep = Annotated[FastEmbedEmbedder, Depends(get_embedder)]
 
 
-def get_reranker() -> Reranker:
+def get_reranker() -> FastEmbedReranker:
     return get_default_reranker()
 
 
-RerankerDep = Annotated[Reranker, Depends(get_reranker)]
+RerankerDep = Annotated[FastEmbedReranker, Depends(get_reranker)]
 
 
 def get_chat_model() -> ChatModel:
@@ -89,6 +92,26 @@ def get_supervisor() -> Runnable[Any, Any]:
 
 
 SupervisorDep = Annotated[Runnable[Any, Any], Depends(get_supervisor)]
+
+
+def get_query_service(
+    db: DbSession,
+    embedder: EmbedderDep,
+    reranker: RerankerDep,
+    model: ChatModelDep,
+    resolver: ContextualResolverDep,
+    supervisor: SupervisorDep,
+) -> QueryService:
+    """Build the one facade shared by legacy and supervisor query execution."""
+    return QueryService(
+        SearchService(db, embedder, reranker=reranker),
+        answers=AnswerService(model),
+        resolver=resolver,
+        supervisor=supervisor,
+    )
+
+
+QueryServiceDep = Annotated[QueryService, Depends(get_query_service)]
 
 _bearer = HTTPBearer(
     auto_error=False

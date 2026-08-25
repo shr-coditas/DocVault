@@ -34,27 +34,15 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = []
 
-    # -- document intelligence --------------------------------------------
-    # Chunking is budgeted with the embedding model's own tokenizer. Boundaries
-    # remain source-exact because provenance stores character spans separately.
-    chunk_target_tokens: int = 300
-    chunk_max_tokens: int = 400  # safety below bge-small's 512-token ceiling
-
-    embedding_model_name: str = "BAAI/bge-small-en-v1.5"
-    embedding_dimensions: int = 384
-    embedding_batch_size: int = 32
-
-    embedding_threads: int = 1
+    # Values belong in .env; this class declares only their names and types.
+    chunk_max_tokens: int
+    embedding_model_name: str
+    embedding_batch_size: int
+    embedding_threads: int
     fastembed_cache_dir: str | None = None
-
-    embedding_query_prefix: str = "Represent this sentence for searching relevant passages: "
+    embedding_query_prefix: str
 
     index_batch_limit: int = 50
-
-    index_lease_minutes: int = 15
-    index_node_batch_size: int = 500
-    index_chunk_write_batch_size: int = 200
-    index_artifact_retention_days: int = 7
 
     search_default_limit: int = 10
 
@@ -67,7 +55,6 @@ class Settings(BaseSettings):
     search_rerank_limit: int = 20
     search_rrf_k: int = 60
     search_per_document_limit: int = 4
-    search_source_overlap_threshold: float = 0.8
     reranker_model_name: str = "Xenova/ms-marco-MiniLM-L-6-v2"
 
     guardrail_max_query_chars: int = 2000
@@ -84,7 +71,6 @@ class Settings(BaseSettings):
     resolver_model: str | None = None
     resolver_timeout_seconds: float = 20.0
     resolver_history_max_turns: int = 6
-    resolver_history_token_budget: int = 1500
 
     # -- agent ----------------------------------------------------------
     # The supervised graph. Off means the linear pipeline answers instead:
@@ -107,10 +93,7 @@ class Settings(BaseSettings):
     agent_output_prompt_overlap_chars: int = Field(default=80, ge=40, le=500)
     agent_output_source_overlap_chars: int = Field(default=300, ge=100, le=2000)
 
-    answer_context_token_budget: int = 3000
-    answer_max_sources: int = 8
-    llm_context_window_tokens: int = 32768
-    llm_reserved_output_tokens: int = 2048
+    answer_max_sources: int
     groq_api_key: str | None = None
 
     google_studio_api_key: str | None = None

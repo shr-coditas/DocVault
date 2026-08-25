@@ -53,7 +53,7 @@ def make_decision_payload(
             {
                 "number": number,
                 "document": hit.document_title,
-                "section": hit.breadcrumb or hit.heading,
+                "section": hit.section_path,
                 "excerpt": hit.content.strip(),
             }
             for number, hit in enumerate(sources, start=1)

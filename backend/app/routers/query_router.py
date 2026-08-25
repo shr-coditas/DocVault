@@ -6,41 +6,14 @@ from fastapi import APIRouter, Depends
 from app.controller.query_controller import query_controller
 from app.controller.query_controller.dto.query_dto import QueryIn, QueryOut
 from app.dependencies import (
-    ChatModelDep,
-    DbSession,
-    EmbedderDep,
-    RerankerDep,
-    SupervisorDep,
+    QueryServiceDep,
     require_permission,
 )
 from app.models.user import User
-from app.services.answer_service import AnswerService
-from app.services.query_service import QueryService
-from app.services.search_service import SearchService
 from app.utils.rbac_catalog import Perm
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/query", tags=["query"])
 
-
-def get_query_service(
-    db: DbSession,
-    embedder: EmbedderDep,
-    reranker: RerankerDep,
-    model: ChatModelDep,
-    supervisor: SupervisorDep,
-) -> QueryService:
-    # SearchService is injected rather than reached for, so the intent gate can
-    # be tested with a search double that records whether it was called at all.
-    # AnswerService likewise: the ChatModel seam is what keeps the suite offline,
-    # and it is the only way to assert *which* passages reached the model.
-    return QueryService(
-        SearchService(db, embedder, reranker=reranker),
-        answers=AnswerService(model),
-        supervisor=supervisor,
-    )
-
-
-ServiceDep = Annotated[QueryService, Depends(get_query_service)]
 
 # Same capability as /search: this endpoint retrieves document text, so it is a
 # document read. Per-document visibility is enforced inside the retrieval, and
@@ -55,7 +28,7 @@ async def submit_query(
     workspace_id: uuid.UUID,
     data: QueryIn,
     user: CanRead,
-    service: ServiceDep,
+    service: QueryServiceDep,
 ) -> QueryOut:
     """Guardrail, classify, retrieve if warranted, and answer over what returned.
 

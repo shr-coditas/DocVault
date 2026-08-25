@@ -157,14 +157,6 @@ _OUT_OF_SCOPE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 class RuleBasedIntentClassifier:
-    """Deterministic, offline, and explainable.
-
-    Order matters and encodes precedence: an injection attempt dressed up as a
-    greeting is an injection attempt. Confidence is not a probability - it is a
-    flat "a rule matched" (high) versus "nothing matched, so this is the default"
-    (low), and it says so rather than manufacturing a number that looks learned.
-    """
-
     # a matched pattern is a deliberate, specific signal
     MATCH_CONFIDENCE = 0.9
     # the default is a policy choice, not an observation. See the note above.

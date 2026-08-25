@@ -65,7 +65,7 @@ def hit(
     chunk_id: uuid.UUID | None = None,
     title: str = "Leave policy",
     file_name: str = "leave.pdf",
-    logical_key: str = "leave/carry-over",
+    section_path: str = "Leave > Carry over",
 ) -> SearchHit:
     return SearchHit(
         document_id=document_id or uuid.uuid4(),
@@ -76,7 +76,7 @@ def hit(
         content=content,
         score=score,
         mode=SearchMode.HYBRID,
-        logical_key=logical_key,
+        section_path=section_path,
         scores=ScoreBreakdown(semantic=0.8, lexical=0.7, fusion=0.03, rerank=score),
     )
 
@@ -307,8 +307,8 @@ async def test_the_supervisor_sees_the_sources_it_is_judging() -> None:
 
 
 async def test_a_second_search_adds_to_the_evidence_rather_than_replacing_it() -> None:
-    first = hit(content="Carry-over is capped at five days.", logical_key="leave/cap")
-    second = hit(content="Contractors accrue no leave.", logical_key="leave/contractors")
+    first = hit(content="Carry-over is capped at five days.", section_path="Leave > Cap")
+    second = hit(content="Contractors accrue no leave.", section_path="Leave > Contractors")
     result = await run(
         "Do contractors get the same carry-over as employees?",
         supervisor=FakeSupervisor(
@@ -324,9 +324,9 @@ async def test_a_second_search_adds_to_the_evidence_rather_than_replacing_it() -
     )
 
     assert [call.query for call in result.search.calls] == ["carry-over cap", "contractor leave"]
-    assert {source.logical_key for source in result.outcome.hits} == {
-        "leave/cap",
-        "leave/contractors",
+    assert {source.section_path for source in result.outcome.hits} == {
+        "Leave > Cap",
+        "Leave > Contractors",
     }
 
 
@@ -337,13 +337,13 @@ async def test_the_same_passage_found_twice_is_offered_once() -> None:
         score=0.40,
         document_id=document_id,
         chunk_id=chunk_id,
-        logical_key="leave/cap",
+        section_path="Leave > Cap",
     )
     strong = hit(
         score=0.95,
         document_id=document_id,
         chunk_id=chunk_id,
-        logical_key="leave/cap",
+        section_path="Leave > Cap",
     )
     result = await run(
         "What is the carry-over cap?",
@@ -362,7 +362,9 @@ async def test_the_same_passage_found_twice_is_offered_once() -> None:
 
 
 async def test_merged_sources_stay_inside_the_callers_budget() -> None:
-    batch = tuple(hit(score=0.9 - index / 100, logical_key=f"key/{index}") for index in range(6))
+    batch = tuple(
+        hit(score=0.9 - index / 100, section_path=f"Section {index}") for index in range(6)
+    )
     result = await run(
         "What is the policy?",
         supervisor=FakeSupervisor(

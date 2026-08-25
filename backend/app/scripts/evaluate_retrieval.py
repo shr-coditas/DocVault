@@ -123,9 +123,9 @@ async def _evaluate(args: argparse.Namespace) -> dict[str, object]:
                     for rank in range(1, min(10, len(case.relevant_document_ids)) + 1)
                 )
                 ndcgs.append(dcg / ideal if ideal else 0.0)
-                hashes = [hit.content_hash for hit in result.hits]
-                duplicates += len(hashes) - len(set(hashes))
-                returned += len(hashes)
+                chunk_ids = [hit.chunk_id for hit in result.hits]
+                duplicates += len(chunk_ids) - len(set(chunk_ids))
+                returned += len(chunk_ids)
 
             total = len(golden) or 1
             report[name] = {

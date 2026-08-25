@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # is on /search, and two Pydantic models for one concept drift the moment one of
 # them gains a field. The direction of the import is the tolerable half of the
 # trade - this DTO depends on the search DTO, never the reverse.
-from app.controller.search_controller.dto.search_dto import ChunkSourceSpanOut, SearchHitOut
+from app.controller.search_controller.dto.search_dto import SearchHitOut
 from app.services.ai_types import QueryDecision, QueryIntent, SearchMode
 
 
@@ -58,11 +58,8 @@ class CitationOut(BaseModel):
     document_id: uuid.UUID
     document_title: str
     chunk_id: uuid.UUID
-    page_number: int | None
-    page_numbers: list[int]
-    heading: str | None
-    source_spans: list[ChunkSourceSpanOut]
-    logical_key: str
+    section_path: str | None
+    chunk_type: str
 
 
 class GeneratedAnswerOut(BaseModel):

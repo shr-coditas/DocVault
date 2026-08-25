@@ -29,13 +29,6 @@ dependencies = [
     "uvicorn[standard]>=0.51.0",
 ]
 
-[project.optional-dependencies]
-ingestion = [
-    "docling>=2.60.0",
-    "torch>=2.2.0",
-    "torchvision>=0.17.0",
-]
-
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 torchvision = { index = "pytorch-cpu" }
@@ -77,7 +70,7 @@ warn_unused_ignores = true
 exclude = ["app/db/alembic/versions"]
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "aioboto3", "botocore.*", "fastembed.*", "pgvector.*", "docx", "docx.*", "docling.*", "markdown_it.*"]
+module = ["testcontainers.*", "aioboto3", "botocore.*", "fastembed.*", "pgvector.*", "docx", "docx.*", "markdown_it.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -1,17 +1,11 @@
-"""Offline cross-encoder reranking behind a testable protocol."""
+"""Offline cross-encoder reranking."""
 
 import asyncio
 from collections.abc import Sequence
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import Any
 
 from app.config import Settings, get_settings
-
-
-class Reranker(Protocol):
-    model_name: str
-
-    async def rerank(self, query: str, passages: Sequence[str]) -> list[float]: ...
 
 
 class FastEmbedReranker:
@@ -42,15 +36,6 @@ class FastEmbedReranker:
 
     async def rerank(self, query: str, passages: Sequence[str]) -> list[float]:
         return await asyncio.to_thread(self._rerank_sync, query, passages)
-
-
-class IdentityReranker:
-    """Deterministic fallback/test double that preserves candidate order."""
-
-    model_name = "identity"
-
-    async def rerank(self, query: str, passages: Sequence[str]) -> list[float]:
-        return [float(len(passages) - index) for index in range(len(passages))]
 
 
 @lru_cache(maxsize=1)

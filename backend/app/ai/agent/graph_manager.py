@@ -28,6 +28,7 @@ def build_graph() -> Any:
     builder.add_node("retrieve", retrieve)
     builder.add_node("write", write)
     builder.add_node("respond", respond)
+
     builder.add_edge(START, "guard")
     builder.add_conditional_edges("guard", route, ["classify", "respond"])
     builder.add_conditional_edges("classify", route, ["supervise", "respond"])
@@ -35,6 +36,7 @@ def build_graph() -> Any:
     builder.add_edge("retrieve", "supervise")
     builder.add_conditional_edges("write", route, ["supervise", "respond"])
     builder.add_edge("respond", END)
+
     return builder.compile(name="docvault_query")
 
 

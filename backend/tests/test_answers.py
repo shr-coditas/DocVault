@@ -5,45 +5,27 @@ and they are the ones that are painful to pin down through a full request. The
 end-to-end path is covered in ``test_query.py``.
 """
 
-import re
 import uuid
 
 import pytest
 
 from app.config import Settings
-from app.services.ai_types import ChunkSourceSpan, SearchHit, SourceLocation
+from app.services.ai_types import SearchHit
 from app.services.answer_service import AnswerService
 from tests.fakes import FakeChatModel, UnavailableChatModel
 
 
-class TestGenerationCounter:
-    """Treat the fixture's explicit token marker as the rendered prompt cost."""
-
-    def count_tokens(self, text: str) -> int:
-        match = re.search(r"\[tokens=(\d+)\]", text)
-        return int(match.group(1)) if match else 0
-
-
-def hit(marker: str, *, tokens: int = 10, page: int | None = None) -> SearchHit:
+def hit(marker: str) -> SearchHit:
     return SearchHit(
         document_id=uuid.uuid4(),
         document_title=f"{marker}.txt",
         file_name=f"{marker}.txt",
         chunk_id=uuid.uuid4(),
         chunk_index=0,
-        content=f"content of {marker} [tokens={tokens}]",
+        content=f"content of {marker}",
         score=0.9,
-        token_count=tokens,
-        source_spans=(
-            ChunkSourceSpan(
-                0,
-                0,
-                len(f"content of {marker} [tokens={tokens}]"),
-                SourceLocation(page_number=page),
-            ),
-        )
-        if page is not None
-        else (),
+        section_path="Policy > Details",
+        chunk_type="paragraph",
     )
 
 
@@ -51,9 +33,7 @@ def hit(marker: str, *, tokens: int = 10, page: int | None = None) -> SearchHit:
 
 
 def test_sources_are_taken_best_first_up_to_the_cap() -> None:
-    service = AnswerService(
-        FakeChatModel(), Settings(answer_max_sources=3), TestGenerationCounter()
-    )
+    service = AnswerService(FakeChatModel(), Settings(answer_max_sources=3))
     hits = [hit(str(i)) for i in range(10)]
 
     selected = service.select_sources(hits)
@@ -61,44 +41,6 @@ def test_sources_are_taken_best_first_up_to_the_cap() -> None:
     # order preserved: retrieval already ranked these, and the model reads
     # earlier sources as more salient
     assert [source.document_title for source in selected] == ["0.txt", "1.txt", "2.txt"]
-
-
-def test_the_token_budget_stops_selection() -> None:
-    service = AnswerService(
-        FakeChatModel(),
-        Settings(answer_context_token_budget=25, answer_max_sources=99),
-        TestGenerationCounter(),
-    )
-
-    selected = service.select_sources(
-        [hit("a", tokens=10), hit("b", tokens=10), hit("c", tokens=10)]
-    )
-
-    assert [source.document_title for source in selected] == ["a.txt", "b.txt"]
-
-
-def test_a_later_smaller_chunk_still_fits_after_one_is_skipped() -> None:
-    """Skipping an over-budget chunk must not end selection early."""
-    service = AnswerService(
-        FakeChatModel(), Settings(answer_context_token_budget=30), TestGenerationCounter()
-    )
-
-    selected = service.select_sources(
-        [hit("a", tokens=20), hit("big", tokens=500), hit("c", tokens=5)]
-    )
-
-    assert [source.document_title for source in selected] == ["a.txt", "c.txt"]
-
-
-def test_a_single_oversized_chunk_is_still_answered_over() -> None:
-    """Truncated-but-grounded beats refusing because one document chunks badly."""
-    service = AnswerService(
-        FakeChatModel(), Settings(answer_context_token_budget=10), TestGenerationCounter()
-    )
-
-    selected = service.select_sources([hit("huge", tokens=5000)])
-
-    assert [source.document_title for source in selected] == ["huge.txt"]
 
 
 async def test_no_hits_means_no_model_call() -> None:
@@ -117,13 +59,14 @@ async def test_no_hits_means_no_model_call() -> None:
 
 
 def test_markers_resolve_to_the_sources_supplied() -> None:
-    sources = [hit("a", page=3), hit("b")]
+    sources = [hit("a"), hit("b")]
 
     citations = AnswerService.resolve_citations("Alpha [1]. Beta [2].", sources)
 
     assert [citation.marker for citation in citations] == [1, 2]
     assert citations[0].document_title == "a.txt"
-    assert citations[0].page_number == 3
+    assert citations[0].section_path == "Policy > Details"
+    assert citations[0].chunk_type == "paragraph"
     assert citations[1].chunk_id == sources[1].chunk_id
 
 
