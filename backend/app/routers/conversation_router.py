@@ -1,31 +1,24 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.controller.conversation_controller import conversation_controller
 from app.controller.conversation_controller.dto.conversation_dto import (
     ConversationCreate,
     ConversationMessageCreate,
     ConversationMessagePageOut,
+    ConversationMessageSubmissionOut,
     ConversationOut,
     ConversationPageOut,
-    ConversationTurnOut,
 )
 from app.dependencies import (
-    ChatModelDep,
-    ContextualResolverDep,
     DbSession,
-    EmbedderDep,
-    RerankerDep,
-    SupervisorDep,
+    QueryServiceDep,
     require_permission,
 )
 from app.models.user import User
-from app.services.answer_service import AnswerService
 from app.services.conversation_service import ConversationService
-from app.services.query_service import QueryService
-from app.services.search_service import SearchService
 from app.utils.rbac_catalog import Perm
 
 router = APIRouter(
@@ -38,25 +31,18 @@ def get_conversation_service(db: DbSession) -> ConversationService:
     return ConversationService(db)
 
 
-def get_conversation_turn_service(  # why we need this function? why not use get_conversation_service directly?
+def get_conversation_submission_service(
     db: DbSession,
-    embedder: EmbedderDep,
-    reranker: RerankerDep,
-    model: ChatModelDep,
-    resolver: ContextualResolverDep,
-    supervisor: SupervisorDep,
+    query: QueryServiceDep,
 ) -> ConversationService:
-    query = QueryService(
-        SearchService(db, embedder, reranker=reranker),
-        answers=AnswerService(model),
-        resolver=resolver,
-        supervisor=supervisor,
-    )
     return ConversationService(db, query=query)
 
 
 ServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
-TurnServiceDep = Annotated[ConversationService, Depends(get_conversation_turn_service)]
+SubmissionServiceDep = Annotated[
+    ConversationService,
+    Depends(get_conversation_submission_service),
+]
 CanReadDocuments = Annotated[User, Depends(require_permission(Perm.DOCUMENT_READ))]
 
 
@@ -129,43 +115,23 @@ async def list_messages(
     )
 
 
-@router.post("/{conversation_id}/messages", response_model=ConversationTurnOut)
+@router.post(
+    "/{conversation_id}/messages",
+    response_model=ConversationMessageSubmissionOut,
+    status_code=status.HTTP_201_CREATED,
+)
 async def submit_message(
     workspace_id: uuid.UUID,
     conversation_id: uuid.UUID,
     data: ConversationMessageCreate,
-    response: Response,
     user: CanReadDocuments,
-    service: TurnServiceDep,  # why so round round calls?
-) -> ConversationTurnOut:
-    """Persist before generation; return or resume the idempotent leased turn."""
-    turn, created = await conversation_controller.submit_message(
+    service: SubmissionServiceDep,
+) -> ConversationMessageSubmissionOut:
+    """Generate synchronously, then persist and return the completed exchange."""
+    return await conversation_controller.submit_message(
         workspace_id,
         conversation_id,
         data,
-        user,
-        service,
-    )
-    if turn.status == "pending":
-        response.status_code = status.HTTP_202_ACCEPTED
-    elif created:
-        response.status_code = status.HTTP_201_CREATED
-    return turn
-
-
-@router.get("/{conversation_id}/turns/{turn_id}")
-async def get_turn(
-    workspace_id: uuid.UUID,
-    conversation_id: uuid.UUID,
-    turn_id: uuid.UUID,
-    user: CanReadDocuments,
-    service: ServiceDep,
-) -> ConversationTurnOut:
-    """Poll one turn without reloading the whole message history."""
-    return await conversation_controller.get_turn(
-        workspace_id,
-        conversation_id,
-        turn_id,
         user,
         service,
     )

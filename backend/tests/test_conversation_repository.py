@@ -23,8 +23,6 @@ from app.models.conversation import (
     MessageStatus,
 )
 from app.models.document import Document, DocumentVisibility
-from app.models.document_chunk import DocumentChunk
-from app.models.document_index import DocumentIndexRun, DocumentStructureNode, IndexRunStatus
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.repository.conversation_repository import ConversationRepository
@@ -159,28 +157,23 @@ def _conversation(
 def _complete_turn(
     conversation_id: uuid.UUID,
 ) -> tuple[ConversationMessage, ConversationMessage]:
-    turn_id = uuid7()
     user = ConversationMessage(
         id=uuid7(),
         conversation_id=conversation_id,
-        turn_id=turn_id,
         sequence=1,
         role=MessageRole.USER,
         status=MessageStatus.COMPLETE,
         kind=None,
         content="What does the document say?",
-        client_message_id=uuid7(),
     )
     assistant = ConversationMessage(
         id=uuid7(),
         conversation_id=conversation_id,
-        turn_id=turn_id,
         sequence=2,
         role=MessageRole.ASSISTANT,
         status=MessageStatus.COMPLETE,
         kind=MessageKind.ANSWER,
         content="A grounded answer [1].",
-        client_message_id=None,
     )
     return user, assistant
 
@@ -293,12 +286,9 @@ async def test_conversation_cascades_but_document_history_does_not(
         message_id=assistant.id,
         document_id=seeded.visible.id,
         chunk_id=uuid7(),
-        logical_key="section:0/chunk:0",
         document_title_snapshot=seeded.visible.title,
-        heading=None,
-        breadcrumb=None,
-        page_numbers=[],
-        source_spans=[],
+        section_path="Policy",
+        chunk_type="paragraph",
         retrieval_rank=1,
         supplied_to_model=True,
         citation_marker=1,
@@ -331,7 +321,7 @@ async def test_conversation_cascades_but_document_history_does_not(
     assert sources == 0
 
 
-async def test_pending_assistant_requires_a_lease_and_only_one_may_exist(
+async def test_pending_assistant_is_not_a_valid_persisted_message(
     session: AsyncSession,
 ) -> None:
     seeded = await _seed(session)
@@ -343,48 +333,13 @@ async def test_pending_assistant_requires_a_lease_and_only_one_may_exist(
     invalid = ConversationMessage(
         id=uuid7(),
         conversation_id=conversation_id,
-        turn_id=uuid7(),
         sequence=1,
         role=MessageRole.ASSISTANT,
         status=MessageStatus.PENDING,
         kind=None,
         content=None,
-        client_message_id=None,
     )
     session.add(invalid)
-    with pytest.raises(IntegrityError):
-        await session.commit()
-    await session.rollback()
-
-    first = ConversationMessage(
-        id=uuid7(),
-        conversation_id=conversation_id,
-        turn_id=uuid7(),
-        sequence=1,
-        role=MessageRole.ASSISTANT,
-        status=MessageStatus.PENDING,
-        kind=None,
-        content=None,
-        client_message_id=None,
-        lease_token=uuid7(),
-        lease_expires_at=datetime.now(UTC) + timedelta(minutes=2),
-    )
-    second = ConversationMessage(
-        id=uuid7(),
-        conversation_id=conversation_id,
-        turn_id=uuid7(),
-        sequence=2,
-        role=MessageRole.ASSISTANT,
-        status=MessageStatus.PENDING,
-        kind=None,
-        content=None,
-        client_message_id=None,
-        lease_token=uuid7(),
-        lease_expires_at=datetime.now(UTC) + timedelta(minutes=2),
-    )
-    session.add(first)
-    await session.commit()
-    session.add(second)
     with pytest.raises(IntegrityError):
         await session.commit()
     await session.rollback()
@@ -404,12 +359,9 @@ async def test_citation_requires_a_source_supplied_to_the_model(
             message_id=assistant.id,
             document_id=seeded.visible.id,
             chunk_id=uuid7(),
-            logical_key="document/chunk:0",
             document_title_snapshot=seeded.visible.title,
-            heading=None,
-            breadcrumb=None,
-            page_numbers=[],
-            source_spans=[],
+            section_path=None,
+            chunk_type="paragraph",
             retrieval_rank=1,
             supplied_to_model=False,
             citation_marker=1,
@@ -419,132 +371,3 @@ async def test_citation_requires_a_source_supplied_to_the_model(
     with pytest.raises(IntegrityError):
         await session.commit()
     await session.rollback()
-
-
-def _index_run(document: Document) -> DocumentIndexRun:
-    return DocumentIndexRun(
-        id=uuid7(),
-        workspace_id=document.workspace_id,
-        document_id=document.id,
-        extractor_profile="test-extractor",
-        normalizer_profile="test-normalizer",
-        chunker_profile="test-chunker",
-        embedding_profile="test-profile",
-        status=IndexRunStatus.ACTIVE,
-        lease_token=uuid7(),
-        lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
-        quality_metrics={},
-    )
-
-
-def _node(run: DocumentIndexRun) -> DocumentStructureNode:
-    return DocumentStructureNode(
-        id=uuid7(),
-        run_id=run.id,
-        workspace_id=run.workspace_id,
-        document_id=run.document_id,
-        parent_id=None,
-        logical_path="document",
-        ordinal=0,
-        node_type="document",
-        heading_level=None,
-        text=None,
-        source_spans=[],
-        attributes={},
-        confidence=1.0,
-        content_hash="node".ljust(64, "0"),
-    )
-
-
-def _chunk(
-    run: DocumentIndexRun,
-    node: DocumentStructureNode,
-) -> DocumentChunk:
-    return DocumentChunk(
-        id=uuid7(),
-        run_id=run.id,
-        document_id=run.document_id,
-        workspace_id=run.workspace_id,
-        logical_key="document/chunk:0",
-        chunk_index=0,
-        structural_node_id=node.id,
-        parent_node_id=None,
-        ordinal_in_parent=0,
-        chunk_type="paragraph_chunk",
-        heading_path=[],
-        breadcrumb=None,
-        content="indexed content",
-        embedding_text="indexed content",
-        lexical_text="indexed content",
-        embedding_token_count=2,
-        page_start=None,
-        page_end=None,
-        source_spans=[],
-        language="en",
-        content_hash="chunk".ljust(64, "0"),
-        chunk_metadata={},
-        embedding_profile_id="test-profile",
-        embedding_model="test-model",
-        embedding=[0.0] * 384,
-    )
-
-
-async def test_source_resolution_uses_exact_chunk_and_survives_source_deletion(
-    session: AsyncSession,
-) -> None:
-    seeded = await _seed(session)
-    document = _document(
-        workspace_id=seeded.workspace.id,
-        owner_id=seeded.owner.id,
-        marker="indexed",
-    )
-    document.indexed = True
-    session.add(document)
-    await session.flush()
-    run = _index_run(document)
-    session.add(run)
-    await session.flush()
-    node = _node(run)
-    session.add(node)
-    await session.flush()
-    chunk = _chunk(run, node)
-    session.add(chunk)
-
-    conversation = _conversation(seeded)
-    session.add(conversation)
-    user, assistant = _complete_turn(conversation.id)
-    session.add_all([user, assistant])
-    source = MessageSource(
-        id=uuid7(),
-        message_id=assistant.id,
-        document_id=document.id,
-        chunk_id=chunk.id,
-        logical_key=chunk.logical_key,
-        document_title_snapshot=document.title,
-        heading=None,
-        breadcrumb=None,
-        page_numbers=[],
-        source_spans=[],
-        retrieval_rank=1,
-        supplied_to_model=True,
-        citation_marker=1,
-    )
-    session.add(source)
-    await session.commit()
-
-    repository = ConversationRepository(session)
-    exact = await repository.resolve_source_chunks([source.id], workspace_id=seeded.workspace.id)
-    assert exact[source.id].chunk is not None
-    assert exact[source.id].chunk.id == chunk.id
-    assert exact[source.id].relocated is False
-
-    await session.delete(run)
-    await session.commit()
-    unresolved = await repository.resolve_source_chunks(
-        [source.id], workspace_id=seeded.workspace.id
-    )
-    assert unresolved[source.id].chunk is None
-    assert unresolved[source.id].relocated is False
-    assert (
-        await session.execute(select(func.count()).select_from(MessageSource))
-    ).scalar_one() == 1

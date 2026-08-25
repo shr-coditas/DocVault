@@ -319,30 +319,25 @@ async def test_message_listing_is_sequence_paginated_and_creator_owned(env: Env)
         repository = ConversationRepository(session)
         messages = []
         for turn_number in range(2):
-            turn_id = uuid7()
             messages.extend(
                 [
                     ConversationMessage(
                         id=uuid7(),
                         conversation_id=conversation_id,
-                        turn_id=turn_id,
                         sequence=turn_number * 2 + 1,
                         role=MessageRole.USER,
                         status=MessageStatus.COMPLETE,
                         kind=None,
                         content=f"Question {turn_number + 1}",
-                        client_message_id=uuid7(),
                     ),
                     ConversationMessage(
                         id=uuid7(),
                         conversation_id=conversation_id,
-                        turn_id=turn_id,
                         sequence=turn_number * 2 + 2,
                         role=MessageRole.ASSISTANT,
                         status=MessageStatus.COMPLETE,
                         kind=MessageKind.NO_SOURCES,
                         content="No sources found.",
-                        client_message_id=None,
                     ),
                 ]
             )
@@ -361,6 +356,8 @@ async def test_message_listing_is_sequence_paginated_and_creator_owned(env: Env)
     )
     assert [item["sequence"] for item in second.json()["items"]] == [3, 4]
     assert second.json()["next_after_sequence"] is None
+    assert "turn_id" not in second.json()["items"][0]
+    assert "client_message_id" not in second.json()["items"][0]
     assert "resolved_query" not in second.json()["items"][0]
     assert "lease_token" not in second.json()["items"][0]
 

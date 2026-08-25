@@ -73,7 +73,9 @@ def try_refresh() -> bool:
     return True
 
 
-def _request(method: str, path: str, *, timeout: float = 10.0, **kwargs: Any) -> httpx.Response:
+def _request(
+    method: str, path: str, *, timeout: float = 10.0, **kwargs: Any
+) -> httpx.Response:
     resp = httpx.request(
         method, f"{base_url()}{path}", headers=_headers(), timeout=timeout, **kwargs
     )
@@ -139,7 +141,9 @@ def list_workspaces() -> list[dict[str, Any]]:
 
 
 def create_workspace(name: str, description: str = "") -> dict[str, Any]:
-    return _request("POST", "/workspaces", json={"name": name, "description": description}).json()
+    return _request(
+        "POST", "/workspaces", json={"name": name, "description": description}
+    ).json()
 
 
 def delete_workspace(workspace_id: str) -> None:
@@ -166,7 +170,9 @@ def list_teams(workspace_id: str) -> list[dict[str, Any]]:
 
 
 def create_team(workspace_id: str, name: str) -> dict[str, Any]:
-    return _request("POST", f"/workspaces/{workspace_id}/teams", json={"name": name}).json()
+    return _request(
+        "POST", f"/workspaces/{workspace_id}/teams", json={"name": name}
+    ).json()
 
 
 def delete_team(workspace_id: str, team_id: str) -> None:
@@ -196,7 +202,9 @@ def folder_tree(workspace_id: str) -> list[dict[str, Any]]:
     return _request("GET", f"/workspaces/{workspace_id}/folders/tree").json()
 
 
-def create_folder(workspace_id: str, name: str, parent_id: str | None) -> dict[str, Any]:
+def create_folder(
+    workspace_id: str, name: str, parent_id: str | None
+) -> dict[str, Any]:
     return _request(
         "POST",
         f"/workspaces/{workspace_id}/folders",
@@ -223,7 +231,9 @@ def upload_document(
     return _request(
         "POST",
         f"/workspaces/{workspace_id}/documents/upload",
-        files={"file": (file_name, file_bytes, content_type or "application/octet-stream")},
+        files={
+            "file": (file_name, file_bytes, content_type or "application/octet-stream")
+        },
         data=data,
         timeout=60,
     ).json()
@@ -237,7 +247,9 @@ def list_documents(
     params: dict[str, Any] = {"scope": "all"} if every_folder else {}
     if folder_id and not every_folder:
         params["folder_id"] = folder_id
-    return _request("GET", f"/workspaces/{workspace_id}/documents", params=params).json()
+    return _request(
+        "GET", f"/workspaces/{workspace_id}/documents", params=params
+    ).json()
 
 
 def download_document(workspace_id: str, document_id: str) -> bytes:
@@ -270,7 +282,9 @@ def trash_document(workspace_id: str, document_id: str) -> None:
 
 
 def restore_document(workspace_id: str, document_id: str) -> dict[str, Any]:
-    return _request("POST", f"/workspaces/{workspace_id}/documents/{document_id}/restore").json()
+    return _request(
+        "POST", f"/workspaces/{workspace_id}/documents/{document_id}/restore"
+    ).json()
 
 
 def list_trash(workspace_id: str) -> list[dict[str, Any]]:
@@ -323,7 +337,9 @@ def query_documents(
     except httpx.TimeoutException as exc:
         raise ApiError(504, "The answer took too long. Please try again.") from exc
     except httpx.HTTPError as exc:
-        raise ApiError(503, "DocVault is temporarily unavailable. Please try again.") from exc
+        raise ApiError(
+            503, "DocVault is temporarily unavailable. Please try again."
+        ) from exc
 
 
 # --- conversations ------------------------------------------------------
@@ -414,37 +430,22 @@ def submit_conversation_message(
     workspace_id: str,
     conversation_id: str,
     content: str,
-    client_message_id: str,
 ) -> dict[str, Any]:
-    """Submit or resume one idempotent turn.
-
-    A timeout is deliberately surfaced without changing the client message ID;
-    the caller can safely retry the same logical submission.
-    """
+    """Submit one synchronous conversation exchange."""
     return _conversation_request(
         "POST",
         f"/workspaces/{workspace_id}/conversations/{conversation_id}/messages",
-        json={"content": content, "client_message_id": client_message_id},
+        json={"content": content},
         timeout=90.0,
-    ).json()
-
-
-def get_conversation_turn(
-    workspace_id: str,
-    conversation_id: str,
-    turn_id: str,
-) -> dict[str, Any]:
-    return _conversation_request(
-        "GET",
-        f"/workspaces/{workspace_id}/conversations/{conversation_id}/turns/{turn_id}",
-        timeout=15.0,
     ).json()
 
 
 # --- sharing ------------------------------------------------------------
 
 
-def set_visibility(workspace_id: str, document_id: str, visibility: str) -> dict[str, Any]:
+def set_visibility(
+    workspace_id: str, document_id: str, visibility: str
+) -> dict[str, Any]:
     return _request(
         "PUT",
         f"/workspaces/{workspace_id}/documents/{document_id}/visibility",
@@ -453,7 +454,9 @@ def set_visibility(workspace_id: str, document_id: str, visibility: str) -> dict
 
 
 def list_grants(workspace_id: str, document_id: str) -> list[dict[str, Any]]:
-    return _request("GET", f"/workspaces/{workspace_id}/documents/{document_id}/grants").json()
+    return _request(
+        "GET", f"/workspaces/{workspace_id}/documents/{document_id}/grants"
+    ).json()
 
 
 def add_grant(
@@ -480,4 +483,6 @@ def remove_grant(
 
 
 def get_audit_log(workspace_id: str, limit: int = 20) -> list[dict[str, Any]]:
-    return _request("GET", f"/workspaces/{workspace_id}/audit", params={"limit": limit}).json()
+    return _request(
+        "GET", f"/workspaces/{workspace_id}/audit", params={"limit": limit}
+    ).json()

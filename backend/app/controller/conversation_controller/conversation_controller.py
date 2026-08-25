@@ -7,9 +7,9 @@ from app.controller.conversation_controller.dto.conversation_dto import (
     ConversationMessageOut,
     ConversationMessagePageOut,
     ConversationMessageSourceOut,
+    ConversationMessageSubmissionOut,
     ConversationOut,
     ConversationPageOut,
-    ConversationTurnOut,
     UnavailableConversationDocumentOut,
 )
 from app.models.user import User
@@ -18,7 +18,7 @@ from app.services.conversation_service import (
     ConversationRecord,
     ConversationService,
     MessageRecord,
-    TurnRecord,
+    MessageSubmission,
 )
 
 
@@ -56,18 +56,14 @@ def _message_out(record: MessageRecord) -> ConversationMessageOut:
     if record.redacted:
         return ConversationMessageOut(
             id=message.id,
-            turn_id=message.turn_id,
             sequence=message.sequence,
             role=message.role,
             status=message.status,
             kind="redacted",
             content=REDACTED_ANSWER_MESSAGE,
-            context_eligible=False,
             redacted=True,
             sources=[],
             unavailable_documents=unavailable_documents,
-            client_message_id=message.client_message_id,
-            model=None,
             input_tokens=None,
             output_tokens=None,
             created_at=message.created_at,
@@ -75,36 +71,27 @@ def _message_out(record: MessageRecord) -> ConversationMessageOut:
         )
     return ConversationMessageOut(
         id=message.id,
-        turn_id=message.turn_id,
         sequence=message.sequence,
         role=message.role,
         status=message.status,
         kind=message.kind,
         content=message.content,
-        context_eligible=message.context_eligible,
         redacted=False,
         sources=[
             ConversationMessageSourceOut(
-                id=source_record.source.id,
-                document_id=source_record.source.document_id,
-                document_title=source_record.source.document_title_snapshot,
-                chunk_id=source_record.source.chunk_id,
-                resolved_chunk_id=source_record.resolved_chunk_id,
-                relocated=source_record.relocated,
-                logical_key=source_record.source.logical_key,
-                heading=source_record.source.heading,
-                breadcrumb=source_record.source.breadcrumb,
-                page_numbers=source_record.source.page_numbers,
-                source_spans=source_record.source.source_spans,
-                retrieval_rank=source_record.source.retrieval_rank,
-                supplied_to_model=source_record.source.supplied_to_model,
-                citation_marker=source_record.source.citation_marker,
+                id=source.id,
+                document_id=source.document_id,
+                document_title=source.document_title_snapshot,
+                chunk_id=source.chunk_id,
+                section_path=source.section_path,
+                chunk_type=source.chunk_type,
+                retrieval_rank=source.retrieval_rank,
+                supplied_to_model=source.supplied_to_model,
+                citation_marker=source.citation_marker,
             )
-            for source_record in record.sources
+            for source in record.sources
         ],
         unavailable_documents=unavailable_documents,
-        client_message_id=message.client_message_id,
-        model=message.model,
         input_tokens=message.input_tokens,
         output_tokens=message.output_tokens,
         created_at=message.created_at,
@@ -112,17 +99,9 @@ def _message_out(record: MessageRecord) -> ConversationMessageOut:
     )
 
 
-def _turn_out(
-    turn: TurnRecord,
-) -> ConversationTurnOut:
-    assistant_record = next(
-        record for record in turn.messages if record.message.role == "assistant"
-    )
-    status = assistant_record.message.status
-    return ConversationTurnOut(
-        turn_id=turn.turn_id,
-        status=status,
-        messages=[_message_out(message) for message in turn.messages],
+def _submission_out(submission: MessageSubmission) -> ConversationMessageSubmissionOut:
+    return ConversationMessageSubmissionOut(
+        messages=[_message_out(message) for message in submission.messages],
     )
 
 
@@ -196,20 +175,6 @@ async def submit_message(
     data: ConversationMessageCreate,
     user: User,
     service: ConversationService,
-) -> tuple[ConversationTurnOut, bool]:
+) -> ConversationMessageSubmissionOut:
     submission = await service.submit_message(user, workspace_id, conversation_id, data)
-    return (
-        _turn_out(submission.turn),
-        submission.created,
-    )
-
-
-async def get_turn(
-    workspace_id: uuid.UUID,
-    conversation_id: uuid.UUID,
-    turn_id: uuid.UUID,
-    user: User,
-    service: ConversationService,
-) -> ConversationTurnOut:
-    turn = await service.get_turn(user, workspace_id, conversation_id, turn_id)
-    return _turn_out(turn)
+    return _submission_out(submission)

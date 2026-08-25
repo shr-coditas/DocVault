@@ -9,7 +9,6 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 revision: str = "4f8c2d7a91e3"
 down_revision: str | None = "e7a24c9f10b6"
@@ -90,25 +89,13 @@ def upgrade() -> None:
     op.create_table(
         "messages",
         sa.Column("conversation_id", sa.Uuid(), nullable=False),
-        sa.Column("turn_id", sa.Uuid(), nullable=False),
         sa.Column("sequence", sa.Integer(), nullable=False),
         sa.Column("role", sa.String(length=20), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
         sa.Column("kind", sa.String(length=40), nullable=True),
         sa.Column("content", sa.Text(), nullable=True),
-        sa.Column(
-            "context_eligible",
-            sa.Boolean(),
-            server_default=sa.false(),
-            nullable=False,
-        ),
-        sa.Column("resolved_query", sa.Text(), nullable=True),
-        sa.Column("client_message_id", sa.Uuid(), nullable=True),
-        sa.Column("model", sa.String(length=255), nullable=True),
         sa.Column("input_tokens", sa.Integer(), nullable=True),
         sa.Column("output_tokens", sa.Integer(), nullable=True),
-        sa.Column("lease_token", sa.Uuid(), nullable=True),
-        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column(
             "created_at",
@@ -144,14 +131,9 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "(role = 'user' and status = 'complete' and kind is null "
-            "and content is not null and client_message_id is not null "
-            "and lease_token is null and lease_expires_at is null) or "
-            "(role = 'assistant' and client_message_id is null and "
-            "((status = 'pending' and kind is null and content is null "
-            "and lease_token is not null and lease_expires_at is not null) or "
-            "(status in ('complete', 'failed') and kind is not null "
-            "and content is not null and lease_token is null "
-            "and lease_expires_at is null)))",
+            "and content is not null) or "
+            "(role = 'assistant' and status in ('complete', 'failed') "
+            "and kind is not null and content is not null)",
             name="lifecycle",
         ),
         sa.ForeignKeyConstraint(
@@ -166,30 +148,6 @@ def upgrade() -> None:
             "sequence",
             name="uq_messages_conversation_sequence",
         ),
-        sa.UniqueConstraint(
-            "conversation_id",
-            "turn_id",
-            "role",
-            name="uq_messages_conversation_turn_role",
-        ),
-        sa.UniqueConstraint(
-            "conversation_id",
-            "client_message_id",
-            name="uq_messages_conversation_client_message",
-        ),
-        sa.UniqueConstraint("lease_token", name="uq_messages_lease_token"),
-    )
-    op.create_index(
-        "uq_messages_conversation_pending",
-        "messages",
-        ["conversation_id"],
-        unique=True,
-        postgresql_where=sa.text("role = 'assistant' and status = 'pending'"),
-    )
-    op.create_index(
-        "ix_messages_status_lease",
-        "messages",
-        ["status", "lease_expires_at"],
     )
 
     op.create_table(
@@ -197,12 +155,9 @@ def upgrade() -> None:
         sa.Column("message_id", sa.Uuid(), nullable=False),
         sa.Column("document_id", sa.Uuid(), nullable=False),
         sa.Column("chunk_id", sa.Uuid(), nullable=False),
-        sa.Column("logical_key", sa.String(length=1024), nullable=False),
         sa.Column("document_title_snapshot", sa.String(length=255), nullable=False),
-        sa.Column("heading", sa.Text(), nullable=True),
-        sa.Column("breadcrumb", sa.Text(), nullable=True),
-        sa.Column("page_numbers", ARRAY(sa.Integer()), nullable=False),
-        sa.Column("source_spans", JSONB(), nullable=False),
+        sa.Column("section_path", sa.Text(), nullable=True),
+        sa.Column("chunk_type", sa.String(length=20), nullable=False),
         sa.Column("retrieval_rank", sa.Integer(), nullable=False),
         sa.Column(
             "supplied_to_model",
@@ -245,9 +200,9 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
-        "ix_message_sources_document_logical",
+        "ix_message_sources_document",
         "message_sources",
-        ["document_id", "logical_key"],
+        ["document_id"],
     )
 
 

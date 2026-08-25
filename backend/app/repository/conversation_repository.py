@@ -2,7 +2,6 @@
 
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import and_, func, or_, select, update
@@ -15,15 +14,6 @@ from app.models.conversation import (
     ConversationMessage,
     MessageSource,
 )
-from app.models.document import Document
-from app.models.document_chunk import DocumentChunk
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedSource:
-    source_id: uuid.UUID
-    chunk: DocumentChunk | None
-    relocated: bool
 
 
 class ConversationRepository:
@@ -147,48 +137,6 @@ class ConversationRepository:
         )
         return list((await self.session.execute(stmt)).scalars())
 
-    async def messages_for_turn(
-        self, conversation_id: uuid.UUID, turn_id: uuid.UUID
-    ) -> list[ConversationMessage]:
-        stmt = (
-            select(ConversationMessage)
-            .where(
-                ConversationMessage.conversation_id == conversation_id,
-                ConversationMessage.turn_id == turn_id,
-            )
-            .order_by(ConversationMessage.sequence)
-        )
-        return list((await self.session.execute(stmt)).scalars())
-
-    async def turn_for_client_message(
-        self, conversation_id: uuid.UUID, client_message_id: uuid.UUID
-    ) -> list[ConversationMessage]:
-        user_message = aliased(ConversationMessage)
-        stmt = (
-            select(ConversationMessage)
-            .join(
-                user_message,
-                and_(
-                    user_message.conversation_id == ConversationMessage.conversation_id,
-                    user_message.turn_id == ConversationMessage.turn_id,
-                ),
-            )
-            .where(
-                ConversationMessage.conversation_id == conversation_id,
-                user_message.client_message_id == client_message_id,
-            )
-            .order_by(ConversationMessage.sequence)
-        )
-        return list((await self.session.execute(stmt)).scalars())
-
-    async def pending_assistant(self, conversation_id: uuid.UUID) -> ConversationMessage | None:
-        stmt = select(ConversationMessage).where(
-            ConversationMessage.conversation_id == conversation_id,
-            ConversationMessage.role == "assistant",
-            ConversationMessage.status == "pending",
-        )
-        return (await self.session.execute(stmt)).scalar_one_or_none()
-
     async def next_sequence(self, conversation_id: uuid.UUID) -> int:
         stmt = select(func.coalesce(func.max(ConversationMessage.sequence), 0)).where(
             ConversationMessage.conversation_id == conversation_id
@@ -211,7 +159,7 @@ class ConversationRepository:
                 assistant,
                 and_(
                     assistant.conversation_id == user_message.conversation_id,
-                    assistant.turn_id == user_message.turn_id,
+                    assistant.sequence == user_message.sequence + 1,
                     assistant.role == "assistant",
                 ),
             )
@@ -219,7 +167,6 @@ class ConversationRepository:
                 user_message.conversation_id == conversation_id,
                 user_message.role == "user",
                 user_message.sequence < before_sequence,
-                user_message.context_eligible.is_(True),
                 assistant.status == "complete",
                 assistant.kind == "answer",
             )
@@ -230,63 +177,6 @@ class ConversationRepository:
             (user_message, assistant_message)
             for user_message, assistant_message in (await self.session.execute(stmt)).all()
         ]
-
-    async def finalize_assistant(
-        self,
-        message_id: uuid.UUID,
-        *,
-        lease_token: uuid.UUID,
-        status: str,
-        kind: str,
-        content: str,
-        model: str | None,
-        input_tokens: int | None,
-        output_tokens: int | None,
-        updated_at: datetime,
-    ) -> bool:
-        """Finalize only while this execution still owns the pending lease."""
-        stmt = (
-            update(ConversationMessage)
-            .where(
-                ConversationMessage.id == message_id,
-                ConversationMessage.status == "pending",
-                ConversationMessage.lease_token == lease_token,
-            )
-            .values(
-                status=status,
-                kind=kind,
-                content=content,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                lease_token=None,
-                lease_expires_at=None,
-                updated_at=updated_at,
-            )
-            .returning(ConversationMessage.id)
-        )
-        return (await self.session.execute(stmt)).scalar_one_or_none() is not None
-
-    async def update_user_context(
-        self,
-        message_id: uuid.UUID,
-        *,
-        context_eligible: bool,
-        resolved_query: str | None,
-        updated_at: datetime,
-    ) -> None:
-        await self.session.execute(
-            update(ConversationMessage)
-            .where(
-                ConversationMessage.id == message_id,
-                ConversationMessage.role == "user",
-            )
-            .values(
-                context_eligible=context_eligible,
-                resolved_query=resolved_query,
-                updated_at=updated_at,
-            )
-        )
 
     async def touch_conversation(self, conversation_id: uuid.UUID, *, updated_at: datetime) -> None:
         await self.session.execute(
@@ -305,45 +195,3 @@ class ConversationRepository:
             .order_by(MessageSource.message_id, MessageSource.retrieval_rank)
         )
         return list((await self.session.execute(stmt)).scalars())
-
-    async def resolve_source_chunks(
-        self,
-        source_ids: Sequence[uuid.UUID],
-        *,
-        workspace_id: uuid.UUID,
-    ) -> dict[uuid.UUID, ResolvedSource]:
-        """Resolve the exact chunk that grounded each historical source."""
-        ids = list(dict.fromkeys(source_ids))
-        if not ids:
-            return {}
-
-        exact = aliased(DocumentChunk)
-        stmt = (
-            select(MessageSource.id, exact)
-            .join(ConversationMessage, ConversationMessage.id == MessageSource.message_id)
-            .join(Conversation, Conversation.id == ConversationMessage.conversation_id)
-            .outerjoin(
-                Document,
-                and_(
-                    Document.id == MessageSource.document_id,
-                    Document.workspace_id == Conversation.workspace_id,
-                    Document.deleted_at.is_(None),
-                ),
-            )
-            .outerjoin(
-                exact,
-                and_(
-                    exact.id == MessageSource.chunk_id,
-                    exact.document_id == Document.id,
-                    exact.logical_key == MessageSource.logical_key,
-                ),
-            )
-            .where(
-                MessageSource.id.in_(ids),
-                Conversation.workspace_id == workspace_id,
-            )
-        )
-        resolved: dict[uuid.UUID, ResolvedSource] = {}
-        for source_id, exact_chunk in (await self.session.execute(stmt)).all():
-            resolved[source_id] = ResolvedSource(source_id, exact_chunk, relocated=False)
-        return resolved

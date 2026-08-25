@@ -1,11 +1,9 @@
 """Persistent, creator-owned document conversations and source provenance."""
 
 import uuid
-from datetime import datetime
 from enum import StrEnum
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -110,17 +108,6 @@ class ConversationMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         sa.UniqueConstraint(
             "conversation_id", "sequence", name="uq_messages_conversation_sequence"
         ),
-        sa.UniqueConstraint(
-            "conversation_id",
-            "turn_id",
-            "role",
-            name="uq_messages_conversation_turn_role",
-        ),
-        sa.UniqueConstraint(
-            "conversation_id",
-            "client_message_id",
-            name="uq_messages_conversation_client_message",
-        ),
         sa.CheckConstraint("sequence > 0", name="sequence_positive"),
         sa.CheckConstraint(f"role in ({_ROLES})", name="role"),
         sa.CheckConstraint(f"status in ({_STATUSES})", name="status"),
@@ -133,42 +120,23 @@ class ConversationMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         sa.CheckConstraint(
             "(role = 'user' and status = 'complete' and kind is null "
-            "and content is not null and client_message_id is not null "
-            "and lease_token is null and lease_expires_at is null) or "
-            "(role = 'assistant' and client_message_id is null and "
-            "((status = 'pending' and kind is null and content is null "
-            "and lease_token is not null and lease_expires_at is not null) or "
-            "(status in ('complete', 'failed') and kind is not null "
-            "and content is not null and lease_token is null "
-            "and lease_expires_at is null)))",
+            "and content is not null) or "
+            "(role = 'assistant' and status in ('complete', 'failed') "
+            "and kind is not null and content is not null)",
             name="lifecycle",
         ),
-        sa.Index(
-            "uq_messages_conversation_pending",
-            "conversation_id",
-            unique=True,
-            postgresql_where=sa.text("role = 'assistant' and status = 'pending'"),
-        ),
-        sa.Index("ix_messages_status_lease", "status", "lease_expires_at"),
     )
 
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         sa.ForeignKey("conversations.id", ondelete="CASCADE")
     )
-    turn_id: Mapped[uuid.UUID]
     sequence: Mapped[int]
     role: Mapped[str] = mapped_column(sa.String(20))
     status: Mapped[str] = mapped_column(sa.String(20))
     kind: Mapped[str | None] = mapped_column(sa.String(40))
     content: Mapped[str | None] = mapped_column(sa.Text)
-    context_eligible: Mapped[bool] = mapped_column(default=False, server_default=sa.false())
-    resolved_query: Mapped[str | None] = mapped_column(sa.Text)
-    client_message_id: Mapped[uuid.UUID | None]
-    model: Mapped[str | None] = mapped_column(sa.String(255))
     input_tokens: Mapped[int | None]
     output_tokens: Mapped[int | None]
-    lease_token: Mapped[uuid.UUID | None] = mapped_column(unique=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
 
 
 class MessageSource(UUIDPrimaryKeyMixin, Base):
@@ -197,18 +165,15 @@ class MessageSource(UUIDPrimaryKeyMixin, Base):
         sa.CheckConstraint(
             "citation_marker is null or supplied_to_model", name="citation_requires_supplied"
         ),
-        sa.Index("ix_message_sources_document_logical", "document_id", "logical_key"),
+        sa.Index("ix_message_sources_document", "document_id"),
     )
 
     message_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("messages.id", ondelete="CASCADE"))
     document_id: Mapped[uuid.UUID]
     chunk_id: Mapped[uuid.UUID]
-    logical_key: Mapped[str] = mapped_column(sa.String(1024))
     document_title_snapshot: Mapped[str] = mapped_column(sa.String(255))
-    heading: Mapped[str | None] = mapped_column(sa.Text)
-    breadcrumb: Mapped[str | None] = mapped_column(sa.Text)
-    page_numbers: Mapped[list[int]] = mapped_column(ARRAY(sa.Integer), default=list)
-    source_spans: Mapped[list[dict[str, object]]] = mapped_column(JSONB, default=list)
+    section_path: Mapped[str | None] = mapped_column(sa.Text)
+    chunk_type: Mapped[str] = mapped_column(sa.String(20))
     retrieval_rank: Mapped[int]
     supplied_to_model: Mapped[bool] = mapped_column(default=False, server_default=sa.false())
     citation_marker: Mapped[int | None]

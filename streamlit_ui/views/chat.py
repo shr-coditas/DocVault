@@ -1,7 +1,5 @@
 """Ask DocVault with durable conversations and contextual follow-up turns."""
 
-import time
-import uuid
 from collections import Counter
 from typing import Any
 
@@ -11,33 +9,6 @@ import streamlit as st
 
 workspace_id = st.session_state["current_workspace_id"]
 chat_state.ensure_workspace(workspace_id)
-
-
-def _page_text(pages: list[int]) -> str:
-    ordered = sorted(set(pages))
-    if not ordered:
-        return ""
-    if len(ordered) == 1:
-        return f"page {ordered[0]}"
-    return f"pages {ordered[0]}-{ordered[-1]}"
-
-
-def _span_text(source_spans: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for span in source_spans:
-        location = span.get("location") or {}
-        page = location.get("page_number")
-        paragraph = location.get("paragraph_index")
-        row_start = location.get("row_start")
-        row_end = location.get("row_end")
-        if page is not None:
-            parts.append(f"page {page}")
-        if paragraph is not None:
-            parts.append(f"paragraph {paragraph}")
-        if row_start is not None:
-            rows = str(row_start) if row_end in (None, row_start) else f"{row_start}-{row_end}"
-            parts.append(f"table row {rows}")
-    return " · ".join(dict.fromkeys(parts))
 
 
 def _open_document(document_id: str) -> None:
@@ -50,7 +21,9 @@ def _render_scope_warning(message: dict[str, Any]) -> None:
     if not unavailable:
         return
     names = ", ".join(
-        str(document.get("title") or document.get("file_name") or "Unavailable document")
+        str(
+            document.get("title") or document.get("file_name") or "Unavailable document"
+        )
         for document in unavailable
     )
     detail = f" Unavailable: {names}." if names else ""
@@ -75,25 +48,20 @@ def _render_sources(message: dict[str, Any]) -> None:
     for source in ordered:
         marker = source.get("citation_marker")
         prefix = f"[{marker}]" if marker is not None else "Context"
-        breadcrumb = source.get("breadcrumb") or source.get("heading")
-        location = _page_text(source.get("page_numbers") or [])
+        section_path = source.get("section_path")
+        chunk_type = str(source.get("chunk_type") or "").replace("_", " ").title()
         label = " · ".join(
             str(part)
-            for part in (prefix, source.get("document_title"), breadcrumb, location)
+            for part in (prefix, source.get("document_title"), section_path, chunk_type)
             if part
         )
         with st.expander(label):
-            precise_location = _span_text(source.get("source_spans") or [])
-            if precise_location:
-                st.caption(precise_location)
-            if source.get("relocated"):
-                st.info("This source was relocated to the document's current index generation.")
             supplied = (
                 "Supplied to the answer model"
                 if source.get("supplied_to_model")
                 else "Retrieved only"
             )
-            st.caption(f"{supplied} · source `{source['logical_key']}`")
+            st.caption(supplied)
             if st.button(
                 "Open document",
                 key=f"open-source-{source['id']}",
@@ -108,9 +76,7 @@ def _render_message(message: dict[str, Any]) -> None:
         content = message.get("content")
         status = message.get("status")
         kind = message.get("kind")
-        if status == "pending":
-            st.markdown(content or "Searching the permitted document scope…")
-        elif status == "failed":
+        if status == "failed":
             st.error(content or "The answer could not be completed. Please try again.")
         elif kind in {"redacted", "scope_unavailable"}:
             st.warning(content or "This answer is no longer available.")
@@ -206,7 +172,9 @@ if active_id is not None:
         st.error(f"Could not load this conversation: {exc.detail}")
         st.stop()
 
-    pinned_ids = [str(document["document_id"]) for document in conversation["documents"]]
+    pinned_ids = [
+        str(document["document_id"]) for document in conversation["documents"]
+    ]
     chat_state.update_scope(str(conversation["scope_mode"]), pinned_ids)
     st.caption(
         f"Scope: **{_scope_description(conversation)}**. The scope is fixed for this "
@@ -218,48 +186,6 @@ else:
         "the first message, and follow-ups can refer to earlier grounded answers."
     )
 
-
-def _restore_pending_from_messages() -> None:
-    if active_id is None or chat_state.pending() is not None:
-        return
-    users_by_turn = {
-        str(message["turn_id"]): message for message in messages if message["role"] == "user"
-    }
-    pending_assistants = [
-        message
-        for message in messages
-        if message["role"] == "assistant" and message["status"] == "pending"
-    ]
-    if not pending_assistants:
-        return
-    assistant = pending_assistants[-1]
-    user = users_by_turn.get(str(assistant["turn_id"]))
-    if user is None or not user.get("client_message_id") or not user.get("content"):
-        return
-    chat_state.start_pending(
-        active_id,
-        str(user["client_message_id"]),
-        str(user["content"]),
-    )
-    chat_state.set_pending_turn(str(assistant["turn_id"]))
-
-
-_restore_pending_from_messages()
-pending = chat_state.pending()
-if pending and pending["conversation_id"] != active_id:
-    chat_state.clear_pending()
-    pending = None
-
-# A terminal message may have appeared between the last poll and this full reload.
-if pending:
-    terminal_turn_ids = {
-        str(message["turn_id"])
-        for message in messages
-        if message["role"] == "assistant" and message["status"] != "pending"
-    }
-    if pending.get("turn_id") in terminal_turn_ids:
-        chat_state.clear_pending()
-        pending = None
 
 scope_mode = str(st.session_state.get("chat_scope_mode", chat_state.SCOPE_WORKSPACE))
 selected_ids = [str(value) for value in st.session_state.get("chat_document_ids", [])]
@@ -275,28 +201,40 @@ if conversation is None:
 
     folder_paths = {str(item["id"]): item["path"] for item in folder_tree}
     ready_documents = [doc for doc in documents if doc.get("search_status") == "ready"]
-    waiting_documents = [doc for doc in documents if doc.get("search_status") != "ready"]
+    waiting_documents = [
+        doc for doc in documents if doc.get("search_status") != "ready"
+    ]
     ready_by_id = {str(doc["id"]): doc for doc in ready_documents}
     title_counts = Counter(str(doc["title"]) for doc in ready_documents)
 
     def document_label(document_id: str) -> str:
         document = ready_by_id[document_id]
         folder = folder_paths.get(str(document.get("folder_id")), "Workspace root")
-        suffix = f" · {document['file_name']}" if title_counts[str(document["title"])] > 1 else ""
+        suffix = (
+            f" · {document['file_name']}"
+            if title_counts[str(document["title"])] > 1
+            else ""
+        )
         return f"{document['title']} — {folder}{suffix}"
 
     widget_ids = st.session_state.get("_chat_document_choice")
     if isinstance(widget_ids, list):
         st.session_state["_chat_document_choice"] = [
-            str(document_id) for document_id in widget_ids if str(document_id) in ready_by_id
+            str(document_id)
+            for document_id in widget_ids
+            if str(document_id) in ready_by_id
         ]
 
     if waiting_documents:
-        with st.expander(f"{len(waiting_documents)} document(s) are not searchable yet"):
+        with st.expander(
+            f"{len(waiting_documents)} document(s) are not searchable yet"
+        ):
             for document in waiting_documents:
                 status = document.get("search_status", "waiting_for_index")
                 explanation = (
-                    "indexing failed" if status == "indexing_failed" else "waiting for indexing"
+                    "indexing failed"
+                    if status == "indexing_failed"
+                    else "waiting for indexing"
                 )
                 st.caption(f"{document['title']} · {explanation}")
 
@@ -334,7 +272,9 @@ if conversation is None:
         )
         if scope_mode == chat_state.SCOPE_SELECTED:
             valid_selected = [
-                document_id for document_id in selected_ids if document_id in ready_by_id
+                document_id
+                for document_id in selected_ids
+                if document_id in ready_by_id
             ]
             if "_chat_document_choice" not in st.session_state:
                 st.session_state["_chat_document_choice"] = valid_selected
@@ -357,86 +297,17 @@ if conversation is None:
 for message in messages:
     _render_message(message)
 
-if pending and not any(
-    str(message.get("client_message_id")) == pending["client_message_id"] for message in messages
-):
-    _render_message(
-        {
-            "role": "user",
-            "status": "complete",
-            "kind": "question",
-            "content": pending["content"],
-        }
-    )
-    _render_message(
-        {
-            "role": "assistant",
-            "status": "pending",
-            "kind": "answer",
-            "content": None,
-        }
-    )
-
-if not messages and not pending and can_ask:
+if not messages and can_ask:
     st.caption(
         "Try: “What are the main requirements?” Then follow with “Which of those "
         "is highest risk, and why?”"
     )
 
 
-def _handle_turn_response(response: dict[str, Any]) -> None:
-    if response.get("status") == "pending":
-        chat_state.set_pending_turn(str(response["turn_id"]))
-        chat_state.set_pending_error("The answer is still being prepared.")
-    else:
-        chat_state.clear_pending()
-
-
-@st.fragment(run_every="2s")
-def _poll_pending_turn() -> None:
-    current = chat_state.pending()
-    if current is None or current["conversation_id"] != chat_state.active_conversation_id():
-        return
-    try:
-        started_at = float(current.get("started_at", time.monotonic()))
-        lease_may_be_stale = time.monotonic() - started_at >= 125
-        if current.get("turn_id") and not lease_may_be_stale:
-            response = api.get_conversation_turn(
-                workspace_id,
-                current["conversation_id"],
-                current["turn_id"],
-            )
-        else:
-            response = api.submit_conversation_message(
-                workspace_id,
-                current["conversation_id"],
-                current["content"],
-                current["client_message_id"],
-            )
-        _handle_turn_response(response)
-        if response.get("status") != "pending":
-            st.rerun()
-    except api.ApiError as exc:
-        if exc.status_code in {409, 503, 504}:
-            chat_state.set_pending_error(exc.detail)
-        else:
-            chat_state.clear_pending()
-            chat_state.notify(f"The turn could not be resumed: {exc.detail}")
-            st.rerun()
-
-    latest = chat_state.pending()
-    if latest:
-        st.info(latest.get("error", "Preparing the answer…"))
-
-
-pending = chat_state.pending()
-if pending:
-    _poll_pending_turn()
-
 question = st.chat_input(
     "Ask a question about the conversation's document scope",
     max_chars=4000,
-    disabled=not can_ask or pending is not None,
+    disabled=not can_ask,
     submit_mode="disable",
 )
 if question:
@@ -450,19 +321,13 @@ if question:
             )
             conversation_id = str(created["id"])
             chat_state.activate_conversation(conversation_id)
-        client_message_id = str(uuid.uuid4())
-        chat_state.start_pending(conversation_id, client_message_id, question)
-        response = api.submit_conversation_message(
-            workspace_id,
-            conversation_id,
-            question,
-            client_message_id,
-        )
-        _handle_turn_response(response)
+        with st.spinner("Searching and preparing the answer…"):
+            api.submit_conversation_message(
+                workspace_id,
+                conversation_id,
+                question,
+            )
     except api.ApiError as exc:
-        if exc.status_code in {409, 503, 504} and conversation_id is not None:
-            chat_state.set_pending_error(exc.detail)
-        else:
-            chat_state.clear_pending()
-            chat_state.notify(f"I could not submit that message: {exc.detail}")
-    st.rerun()
+        st.error(f"I could not submit that message: {exc.detail}")
+    else:
+        st.rerun()
