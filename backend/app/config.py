@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
 
     google_studio_api_key: str | None = None
+    document_summary_enabled: bool = False
+    document_summary_source_chunks: int = Field(default=4, ge=1, le=12)
+    document_summary_max_lines: int = Field(
+        default=7,
+        ge=1,
+        le=20,
+    )
+    document_summary_max_chars: int = Field(default=4000, ge=500, le=10000)
 
 
 @lru_cache

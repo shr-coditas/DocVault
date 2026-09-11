@@ -996,3 +996,29 @@ runtime adapters, so they were removed without changing behavior.
 - The provider-backed follow-up implementation is now the concrete
   `ContextualQueryResolver`; tests may still supply scripted objects through
   normal Python duck typing.
+
+## 2026-09-04 - route selected-document questions with bounded prefix summaries
+
+The simplified graph needs one narrow model decision before retrieval: whether
+a question could plausibly belong to the conversation's selected documents.
+The index therefore stores one short routing summary made from the first four
+chunks of each document. This is a preview of the beginning, not evidence about
+the whole document.
+
+- Summary generation is opt-in because it sends document content to the
+  configured chat-model provider during indexing. Search indexing succeeds when
+  generation is disabled, unavailable, or returns an invalid summary.
+- Each document has at most one summary, stored by `document_id` and replaced in
+  the same transaction that activates its chunks. Deleting the document removes
+  the summary by cascade.
+- Only summaries for documents that already passed the current actor's document
+  visibility check may reach the scope model. Workspace-wide conversations skip
+  summary routing because their document count is unbounded.
+- The scope model may decline only when every currently accessible selected
+  document has a summary and the question is clearly unrelated. A missing
+  summary, incomplete scope, invalid response, or model outage fails open to the
+  existing permission-filtered search.
+- Contextual follow-up resolution happens before scope routing. A scoped turn is
+  otherwise one search, one cited draft, deterministic output validation, and
+  one response; the former supervisor-controlled search and draft loops are
+  removed.

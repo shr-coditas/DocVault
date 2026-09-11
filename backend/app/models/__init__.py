@@ -15,6 +15,7 @@ from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.document_grant import DocumentGrant
 from app.models.document_index import DocumentIndexRun
+from app.models.document_summary import DocumentSummary
 from app.models.folder import Folder
 from app.models.rbac import Permission, Role, role_permissions
 from app.models.refresh_token import RefreshToken
@@ -31,6 +32,7 @@ __all__ = [
     "DocumentChunk",
     "DocumentGrant",
     "DocumentIndexRun",
+    "DocumentSummary",
     "Folder",
     "MessageSource",
     "Permission",

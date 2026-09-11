@@ -35,7 +35,9 @@ from app.db.session import async_session_factory, dispose_engine
 from app.repository.document_repository import DocumentRepository
 from app.services.embedding_service import get_default_embedder
 from app.services.indexing_service import IndexingService
+from app.services.llm_service import get_default_chat_model
 from app.services.storage_service import StorageService
+from app.services.summary_service import DocumentSummaryService
 from app.utils.logging import configure_logging
 
 logger = structlog.stdlib.get_logger("docvault.indexing")
@@ -87,10 +89,19 @@ async def _run(args: argparse.Namespace) -> int:
 
     # loading the ONNX model takes seconds; do it once, before the loop, and
     # only once we know there is work to do
+    summarizer = None
+    if settings.document_summary_enabled:
+        summarizer = DocumentSummaryService(
+            get_default_chat_model(),
+            max_lines=settings.document_summary_max_lines,
+            max_chars=settings.document_summary_max_chars,
+        )
+
     service = IndexingService(
         session_factory=async_session_factory,
         storage=StorageService(settings),
         embedder=get_default_embedder(),
+        summarizer=summarizer,
         settings=settings,
     )
 

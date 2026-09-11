@@ -15,11 +15,13 @@ from app.models.document_index import DocumentIndexRun, IndexRunStatus
 from app.repository.document_chunk_repository import DocumentChunkRepository
 from app.repository.document_index_repository import DocumentIndexRepository
 from app.repository.document_repository import DocumentRepository
+from app.repository.document_summary_repository import DocumentSummaryRepository
 from app.services.ai_types import IndexOutcome, TextChunk
 from app.services.audit_service import AuditService
 from app.services.chunking_service import ChunkingService, build_embedding_text
 from app.services.embedding_service import FastEmbedEmbedder
 from app.services.storage_service import StorageService
+from app.services.summary_service import DocumentSummaryService
 from app.services.text_extraction_service import TextExtractionService
 
 logger = structlog.stdlib.get_logger("docvault.indexing")
@@ -42,6 +44,7 @@ class _Claim:
 class _Prepared:
     chunks: list[TextChunk]
     vectors: list[list[float]]
+    summary: str | None
 
 
 class IndexingService:
@@ -50,11 +53,13 @@ class IndexingService:
         session_factory: SessionFactory,
         storage: StorageService,
         embedder: FastEmbedEmbedder,
+        summarizer: DocumentSummaryService | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.storage = storage
         self.embedder = embedder
+        self.summarizer = summarizer
         self.settings = settings or get_settings()
         self.extraction = TextExtractionService()
         self.chunking = ChunkingService(self.settings, embedder)
@@ -95,7 +100,26 @@ class IndexingService:
             raise RuntimeError("embedding count does not match chunk count")
         if any(len(vector) != self.embedder.dimensions for vector in vectors):
             raise RuntimeError("embedding dimension mismatch")
-        return _Prepared(chunks, vectors)
+
+        summary: str | None = None
+        if self.summarizer is not None:
+            summary_chunks = chunks[: self.settings.document_summary_source_chunks]
+            try:
+                summary = await self.summarizer.summarize(claim.title, summary_chunks)
+            except Exception as exc:
+                # Search is the primary indexing result. A provider outage or a
+                # malformed optional summary must not make the document unsearchable.
+                logger.warning(
+                    "document_summary_failed",
+                    document_id=str(claim.document_id),
+                    failure_type=type(exc).__name__,
+                )
+
+        return _Prepared(
+            chunks=chunks,
+            vectors=vectors,
+            summary=summary,
+        )
 
     async def activate(self, claim: _Claim, prepared: _Prepared) -> IndexOutcome:
         async with self.session_factory() as session:
@@ -127,6 +151,11 @@ class IndexingService:
                     for chunk, vector in zip(prepared.chunks, prepared.vectors, strict=True)
                 ]
             )
+            if prepared.summary is not None:
+                await DocumentSummaryRepository(session).upsert(
+                    claim.document_id,
+                    prepared.summary,
+                )
             now = datetime.now(UTC)
             document.indexed = True
             document.indexed_at = now
