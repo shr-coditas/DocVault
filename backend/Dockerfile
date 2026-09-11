@@ -9,10 +9,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /app/.venv/bin/python debugpy
 COPY . .
 
-FROM builder AS worker-builder
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra ingestion
-
 FROM python:3.12-slim-bookworm AS runtime-base
 WORKDIR /app
 RUN groupadd -r app && useradd -r -m -g app app
@@ -20,9 +16,8 @@ COPY --from=builder --chown=app:app /app /app
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 \
     FASTEMBED_CACHE_DIR=/opt/models \
     HF_HOME=/opt/models/hf \
-    XDG_CACHE_HOME=/opt/models \
-    DOCLING_ARTIFACTS_PATH=/opt/models/docling
-RUN mkdir -p /opt/models/hf /opt/models/docling && chown -R app:app /opt/models
+    XDG_CACHE_HOME=/opt/models
+RUN mkdir -p /opt/models/hf && chown -R app:app /opt/models
 
 FROM runtime-base AS api
 USER app
@@ -32,12 +27,6 @@ EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM runtime-base AS worker
-COPY --from=worker-builder --chown=app:app /app/.venv /app/.venv
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 libxcb1 \
-    && rm -rf /var/lib/apt/lists/*
-ENV TORCHDYNAMO_DISABLE=1
 USER app
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5', cache_dir='/opt/models')"
-RUN docling-tools models download layout tableformer --output-dir /opt/models/docling
 CMD ["python", "-m", "app.scripts.index_documents"]
