@@ -17,7 +17,7 @@ from app.db.session import get_db
 from app.exceptions import UnauthorizedError
 from app.models.user import User
 from app.repository.user_repository import UserRepository
-from app.services.answer_service import AnswerService
+from app.services.answer_service import CitedAnswerGenerator
 from app.services.contextual_query_service import (
     ContextualQueryResolver,
     get_default_contextual_resolver,
@@ -105,7 +105,7 @@ def get_query_service(
     """Build the one facade shared by legacy and supervisor query execution."""
     return QueryService(
         SearchService(db, embedder, reranker=reranker),
-        answers=AnswerService(model),
+        answers=CitedAnswerGenerator(model),
         resolver=resolver,
         supervisor=supervisor,
     )

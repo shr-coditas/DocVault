@@ -1,4 +1,4 @@
-"""AnswerService in isolation: budgeting, citation resolution, failure.
+"""CitedAnswerGenerator in isolation: budgeting, citation resolution, failure.
 
 No database and no HTTP - these are the decisions the service makes on its own,
 and they are the ones that are painful to pin down through a full request. The
@@ -11,7 +11,7 @@ import pytest
 
 from app.config import Settings
 from app.services.ai_types import SearchHit
-from app.services.answer_service import AnswerService
+from app.services.answer_service import CitedAnswerGenerator
 from tests.fakes import FakeChatModel, UnavailableChatModel
 
 
@@ -33,7 +33,7 @@ def hit(marker: str) -> SearchHit:
 
 
 def test_sources_are_taken_best_first_up_to_the_cap() -> None:
-    service = AnswerService(FakeChatModel(), Settings(answer_max_sources=3))
+    service = CitedAnswerGenerator(FakeChatModel(), Settings(answer_max_sources=3))
     hits = [hit(str(i)) for i in range(10)]
 
     selected = service.select_sources(hits)
@@ -45,7 +45,7 @@ def test_sources_are_taken_best_first_up_to_the_cap() -> None:
 
 async def test_no_hits_means_no_model_call() -> None:
     model = FakeChatModel()
-    service = AnswerService(model)
+    service = CitedAnswerGenerator(model)
 
     attempt = await service.answer("anything?", [])
 
@@ -61,7 +61,7 @@ async def test_no_hits_means_no_model_call() -> None:
 def test_markers_resolve_to_the_sources_supplied() -> None:
     sources = [hit("a"), hit("b")]
 
-    citations = AnswerService.resolve_citations("Alpha [1]. Beta [2].", sources)
+    citations = CitedAnswerGenerator.resolve_citations("Alpha [1]. Beta [2].", sources)
 
     assert [citation.marker for citation in citations] == [1, 2]
     assert citations[0].document_title == "a.txt"
@@ -71,7 +71,7 @@ def test_markers_resolve_to_the_sources_supplied() -> None:
 
 
 def test_a_multi_number_marker_resolves_to_each_source() -> None:
-    citations = AnswerService.resolve_citations("Both agree [1, 2].", [hit("a"), hit("b")])
+    citations = CitedAnswerGenerator.resolve_citations("Both agree [1, 2].", [hit("a"), hit("b")])
 
     assert [citation.marker for citation in citations] == [1, 2]
 
@@ -79,11 +79,11 @@ def test_a_multi_number_marker_resolves_to_each_source() -> None:
 @pytest.mark.parametrize("text", ["Out of range [3].", "Zero [0].", "Way off [99]."])
 def test_unresolvable_markers_are_dropped(text: str) -> None:
     """A citation that resolves to nothing looks authoritative and cannot be checked."""
-    assert AnswerService.resolve_citations(text, [hit("a"), hit("b")]) == ()
+    assert CitedAnswerGenerator.resolve_citations(text, [hit("a"), hit("b")]) == ()
 
 
 def test_a_source_cited_repeatedly_is_reported_once_in_first_use_order() -> None:
-    citations = AnswerService.resolve_citations(
+    citations = CitedAnswerGenerator.resolve_citations(
         "[2] then [1] then [2] again.", [hit("a"), hit("b")]
     )
 
@@ -91,7 +91,9 @@ def test_a_source_cited_repeatedly_is_reported_once_in_first_use_order() -> None
 
 
 def test_prose_without_markers_yields_no_citations() -> None:
-    assert AnswerService.resolve_citations("The documents do not cover this.", [hit("a")]) == ()
+    assert (
+        CitedAnswerGenerator.resolve_citations("The documents do not cover this.", [hit("a")]) == ()
+    )
 
 
 # -- failure ---------------------------------------------------------------
@@ -100,7 +102,7 @@ def test_prose_without_markers_yields_no_citations() -> None:
 async def test_a_provider_failure_returns_none_rather_than_raising() -> None:
     """A failed generation must not discard a successful retrieval."""
     model = UnavailableChatModel()
-    service = AnswerService(model)
+    service = CitedAnswerGenerator(model)
 
     attempt = await service.answer("what is the policy?", [hit("a")])
 
@@ -111,7 +113,7 @@ async def test_a_provider_failure_returns_none_rather_than_raising() -> None:
 
 
 async def test_a_successful_answer_carries_the_model_and_its_token_counts() -> None:
-    service = AnswerService(FakeChatModel(reply="Grounded [1]."))
+    service = CitedAnswerGenerator(FakeChatModel(reply="Grounded [1]."))
 
     attempt = await service.answer("what is the policy?", [hit("a")])
     answer = attempt.answer

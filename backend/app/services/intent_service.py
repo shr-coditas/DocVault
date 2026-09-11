@@ -6,6 +6,10 @@ an HNSW scan if they are classified afterwards, and both are worth exactly zero.
 Only ``DOCUMENT_QUESTION`` reaches the index.
 """
 
+import re
+
+from app.services.ai_types import IntentJudgement, QueryIntent
+
 # ---------------------------------------------------------------------------
 # STUDY NOTE - why the default is DOCUMENT_QUESTION, and why that is not laziness
 #
@@ -31,22 +35,9 @@ Only ``DOCUMENT_QUESTION`` reaches the index.
 # recognise only the three cases that *are* decidable from the text alone:
 # greetings, explicit non-document tasks, and instruction-override attempts.
 #
-# An LLM-backed classifier satisfying this same Protocol can do better, and is
-# where this goes once step 7 has a model wired in. The Protocol is the point of
-# building it this way; the rules are a baseline that already works offline.
+# An LLM-backed classifier could do better, but this project currently has one
+# concrete, deterministic classifier that works offline.
 # ---------------------------------------------------------------------------
-
-import re
-from typing import Protocol
-
-from app.services.ai_types import IntentJudgement, QueryIntent
-
-
-class IntentClassifier(Protocol):
-    """Structural, so an LLM-backed classifier needs no inheritance."""
-
-    async def classify(self, query: str) -> IntentJudgement: ...
-
 
 # Instruction-override phrasing. These target the *shape* of an attack - telling
 # the system to disregard its rules, to reveal them, or to adopt a new persona -

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -83,13 +83,9 @@ class Settings(BaseSettings):
     agent_model: str | None = None
     agent_max_output_tokens: int = Field(default=1000, ge=128, le=4096)
     agent_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
-    # Rounds, not queries: one decision to search costs one, whether it named
-    # one wording or three. The supervisor is clamped to these; it can ask for
-    # another pass and never for a larger allowance.
-    agent_max_searches: int = Field(default=3, ge=1, le=5)
-    agent_max_drafts: int = Field(default=2, ge=1, le=3)
-    # A backstop, not the bound - see `validate_agent_step_budget`.
-    agent_max_steps: int = Field(default=16, ge=6, le=32)
+    # Guard, classify, rephrase, scope, and respond are acyclic. This remains a
+    # defensive LangGraph backstop rather than a product budget.
+    agent_max_steps: int = Field(default=8, ge=6, le=16)
     agent_output_prompt_overlap_chars: int = Field(default=80, ge=40, le=500)
     agent_output_source_overlap_chars: int = Field(default=300, ge=100, le=2000)
 
@@ -97,25 +93,6 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
 
     google_studio_api_key: str | None = None
-
-    @model_validator(mode="after")
-    def validate_agent_step_budget(self) -> "Settings":
-        """Keep the graph's recursion limit ahead of the budgets it has to serve.
-
-        Every node execution is one LangGraph superstep. The longest legal path
-        is guard and classify, then a supervise/retrieve pair per search, then
-        a supervise/write pair per draft, then respond - so a raised budget
-        with an unchanged step limit would surface as a GraphRecursionError on a
-        live request. Refusing at startup makes it a configuration error, which
-        is the kind of failure someone can act on.
-        """
-        required = 3 + 2 * self.agent_max_searches + 2 * self.agent_max_drafts
-        if self.agent_max_steps < required:
-            raise ValueError(
-                f"agent_max_steps must be at least {required} for "
-                f"{self.agent_max_searches} searches and {self.agent_max_drafts} drafts"
-            )
-        return self
 
 
 @lru_cache

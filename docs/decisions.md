@@ -850,7 +850,7 @@ half could be swapped out. This branch replaces it with a supervisor.
 
 - **Six nodes, one of which asks a model.** `guard` (is the message usable),
   `classify` (what is it, and is the conversation's scope still there),
-  `retrieve`, `write` and `respond` are deterministic; `supervise` reads the
+  `retrieve`, `write` and `respond` are deterministic; `supervisor` reads the
   conversation, the question and the excerpts found so far and returns one of
   five actions. It is asked again after each step, so what the analyzer, the
   planner and the grader used to decide separately is now one decision with one
@@ -909,3 +909,90 @@ leaving a constant generation value threaded through every layer.
   to a replacement chunk.
 - **Renaming does not dirty the index.** The title is presentation metadata and
   updating it leaves `indexed` unchanged.
+
+## 2026-08-21 - simple Markdown blocks replace the persisted structure tree
+
+The first structure-aware index stored a format-neutral node tree, exact source
+spans, profiles, hashes, token counts, page ranges, generations, leases, and raw
+extraction artifacts. Those fields supported reindex relocation and large-worker
+coordination that this small learning project does not need. This decision
+supersedes the operational details of the earlier indexing decisions while
+retaining permission-filtered hybrid retrieval and durable conversations.
+
+- **Extraction produces four block types.** PDF, TXT, Markdown, CSV, and DOCX
+  convert directly to paragraph, list, table, or code blocks with one readable
+  `section_path`. Nothing assigns node IDs or persists a second document tree.
+- **A chunk row stores retrieval facts only.** Its document/workspace identity,
+  order, type, section, original content, generated English search vector,
+  384-dimensional embedding, and creation time are sufficient for this product.
+- **Index runs are audit rows, not workflow state.** Each attempt records its
+  document, `processing|completed|failed` status, error, and start/end time. New
+  chunks are built in memory and replace the old set in one database transaction.
+- **Token counts are transient and model-exact.** The FastEmbed model's tokenizer
+  enforces one configured maximum during indexing. Counts and temporary
+  contextual embedding text are not persisted, and approximate token-counter
+  fallbacks were removed.
+- **Forced prose splits preserve context.** Boundaries are tried in the order
+  block, sentence, clause, and finally overlapping word windows. Lists split
+  between items and tables between rows with their header repeated. Abnormal
+  URLs and huge tokens remain in stored content but are represented semantically
+  in the text sent to the embedding model.
+- **Citations are deliberately readable rather than exact.** Search and
+  conversation provenance expose document title, section path, chunk type, and
+  chunk identity. Historical rows are snapshots and are not relocated after a
+  reindex; access checks still use `document_id` at read time.
+- **Hybrid authorization is unchanged.** Both vector and English full-text SQL
+  compose the existing document visibility predicate before ranking. RRF,
+  optional reranking, document scoping, and per-document diversity remain.
+- **Rewriting revisions 0010 and 0011 is allowed only for the planned fresh
+  database rebuild.** A deployed database would require forward migrations
+  instead. The rewritten chain passed upgrade/check/downgrade/upgrade/check on a
+  disposable pgvector database.
+
+## 2026-08-25 - synchronous conversation submission for the simple profile
+
+The leased conversation-turn protocol solved retries, duplicate submissions,
+client disconnects, concurrent workers, and resumable polling. The simple
+deployment does not need those guarantees, and the Streamlit client is allowed
+to show a request-timeout error without automatically retrying. Conversation
+submission is therefore one synchronous request that returns a completed user
+and assistant message pair.
+
+- **The request carries only `content`.** `client_message_id`, durable `turn_id`,
+  lease tokens, lease expiry, pending responses, and the turn-status endpoint are
+  removed together. A history reload shows the answer if the server completed
+  after a client timeout; a user who manually submits again may create a
+  duplicate, which is an accepted trade-off.
+- **Only completed pairs are persisted.** Query execution happens first. The
+  service then locks the conversation and writes the user message, assistant
+  message, citation snapshots, and conversation timestamp in one transaction.
+  An execution failure leaves no partial message or recoverable turn.
+- **Derived execution details remain transient.** `resolved_query`,
+  `context_eligible`, and `model` are no longer message columns or API fields.
+  Access-safe history pairs adjacent completed user and answer messages; the
+  legacy resolver may still rewrite a follow-up in memory, while the supervisor
+  path keeps history in graph state.
+- **Legacy compatibility stays at the query boundary.** `/query` remains the
+  stateless compatibility endpoint, `/conversations` remains canonical chat,
+  and one centralized `QueryService` factory supplies either the legacy pipeline
+  or supervisor according to `agent_enabled`.
+- **The existing conversation migration is rewritten only for a fresh simple
+  database.** A deployed database would require a forward migration. The edited
+  chain passed upgrade/check/downgrade/upgrade/check against a disposable
+  simple-profile pgvector database with no metadata drift.
+
+## 2026-08-26 - keep protocols only at a real external boundary
+
+The beginner-oriented code should not require tracing an interface, factory,
+implementation, and fake when the application has only one production
+implementation. `GuardrailCheck`, `IntentClassifier`, and
+`ContextualQueryResolver` added that indirection without representing competing
+runtime adapters, so they were removed without changing behavior.
+
+- `ChatModel` remains the sole application `Protocol`; it is the genuine seam
+  between cited generation, provider-backed models, and offline model fakes.
+- Guardrail orchestration is typed as a union of its three concrete checks.
+- Query orchestration and evaluation use `RuleBasedIntentClassifier` directly.
+- The provider-backed follow-up implementation is now the concrete
+  `ContextualQueryResolver`; tests may still supply scripted objects through
+  normal Python duck typing.

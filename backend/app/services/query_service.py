@@ -1,39 +1,3 @@
-"""Where a question enters the system, and which of the two paths it takes.
-
-The supervised graph in ``app.ai.agent`` answers by default. This module still
-owns the linear pipeline it grew out of, and falls back to it when there is no
-supervisor or no answerer to run the graph with - a deployment without a
-provider key still guards, classifies, retrieves and returns passages.
-
-The linear pipeline, which is also the shape of the graph's deterministic gate:
-
-    guardrail chain      cheap, mechanical. Fails → BLOCK, nothing else runs.
-    intent classifier    what the query is. No I/O, no model, no database.
-    route                only DOCUMENT_QUESTION calls SearchService.
-
-**The ordering is the feature.** Retrieval is the expensive step - an embedding
-inference plus an HNSW scan against a permission predicate - and three of the
-four intents cannot possibly benefit from it. Classifying first means a greeting,
-an out-of-scope request, and an injection attempt each cost a few microseconds of
-regex instead. Classify *after* retrieving and the work is already spent by the
-time you learn it was pointless.
-
-It is worth being precise about what this does and does not save. The vector
-query is one indexed scan; the embedding call is local ONNX inference. Neither is
-catastrophic on its own. What the gate really buys is:
-
-- the saving scales with abuse - a caller hammering injections gets rejected at
-  regex cost, not inference cost, so the cheap attack stays cheap to refuse;
-- the same branch skips the *LLM* call, which is the expensive one and the one
-  that is billed;
-- a blocked query never reaches the index at all, so there is no window in which
-  a hostile prompt has been anywhere near retrieved document text.
-
-Nothing here weakens authorization. Retrieval, when it happens, goes through
-``SearchService`` exactly as ``/search`` does, with the same access filter - the
-intent gate decides *whether* to search, never *what may be seen*.
-"""
-
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -56,20 +20,17 @@ from app.services.ai_types import (
     SearchHit,
     SearchMode,
 )
-from app.services.answer_service import AnswerService
+from app.services.answer_service import CitedAnswerGenerator
 from app.services.contextual_query_service import (
     ContextualQueryResolver,
     ResolverUnavailableError,
 )
 from app.services.guardrail_service import GuardrailService
-from app.services.intent_service import IntentClassifier, RuleBasedIntentClassifier
+from app.services.intent_service import RuleBasedIntentClassifier
 from app.services.search_service import SearchService
 
 logger = structlog.stdlib.get_logger("docvault.query")
 
-# The fixed refusal sentences live in `app.ai.prompts` with the rest of the
-# user-facing text; they are re-exported here because this module was where they
-# used to be, and callers still import them from it.
 DECLINE_MESSAGE = prompts.DECLINE_MESSAGE
 BLOCK_MESSAGE = prompts.BLOCK_MESSAGE
 CHITCHAT_MESSAGE = prompts.CHITCHAT_MESSAGE
@@ -78,9 +39,6 @@ SCOPE_UNAVAILABLE_MESSAGE = prompts.SCOPE_UNAVAILABLE_MESSAGE
 
 QueryContextLoader = Callable[[], Awaitable[QueryExecutionContext]]
 
-# Which intents justify spending a retrieval. A one-line policy table beats the
-# same knowledge spread across an if/elif chain, and it is the thing to read when
-# asking "why did this query not search?".
 _DECISIONS: dict[QueryIntent, QueryDecision] = {
     QueryIntent.DOCUMENT_QUESTION: QueryDecision.RETRIEVE,
     QueryIntent.CHITCHAT: QueryDecision.ANSWER_DIRECTLY,
@@ -89,8 +47,6 @@ _DECISIONS: dict[QueryIntent, QueryDecision] = {
 }
 
 _MESSAGES: dict[QueryDecision, str | None] = {
-    # not a fixed sentence: a retrieval's message depends on what came back, so
-    # `_retrieval_message` decides it. Null here means "ask that function".
     QueryDecision.RETRIEVE: None,
     QueryDecision.ANSWER_DIRECTLY: CHITCHAT_MESSAGE,
     QueryDecision.DECLINE: DECLINE_MESSAGE,
@@ -105,8 +61,8 @@ class QueryService:
         self,
         search: SearchService,
         guardrails: GuardrailService | None = None,
-        classifier: IntentClassifier | None = None,
-        answers: AnswerService | None = None,
+        classifier: RuleBasedIntentClassifier | None = None,
+        answers: CitedAnswerGenerator | None = None,
         resolver: ContextualQueryResolver | None = None,
         supervisor: Runnable[Any, Any] | None = None,
         settings: Settings | None = None,
@@ -115,14 +71,8 @@ class QueryService:
         self.search = search
         self.guardrails = guardrails or GuardrailService(settings=self.settings)
         self.classifier = classifier or RuleBasedIntentClassifier()
-        # Optional: with no answerer the pipeline still guards, classifies, and
-        # retrieves - it just returns passages instead of prose. That is the
-        # shape a deployment with no API key runs in, and it is a degradation
-        # rather than an outage.
         self.answers = answers
         self.resolver = resolver
-        # Used only by the graph. The linear pipeline needs no supervision: it
-        # searches once and generates once, and there is nothing to decide.
         self.supervisor = supervisor
 
     async def handle(
@@ -160,8 +110,6 @@ class QueryService:
 
         from app.ai.agent import Context, run_workflow
 
-        # The conversation's scope and history are resolved before the graph
-        # starts rather than inside it.
         context = QueryExecutionContext(
             document_ids=tuple(document_ids) if document_ids is not None else None
         )
@@ -171,7 +119,7 @@ class QueryService:
 
         return await run_workflow(
             query,
-            context.history,
+            context,
             Context(
                 actor=actor,
                 workspace_id=workspace_id,
@@ -185,6 +133,7 @@ class QueryService:
                 limit=limit,
                 semantic_min_score=semantic_min_score,
                 mode=mode,
+                resolver=self.resolver,
             ),
         )
 

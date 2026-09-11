@@ -11,7 +11,7 @@ import zlib
 from collections.abc import Sequence
 from typing import Any
 
-from app.ai.agent.llm_response_dto import Supervision
+from app.ai.agent.llm_response_dto import ScopeDecision
 from app.services.ai_types import (
     ContextReason,
     ContextResolution,
@@ -205,88 +205,55 @@ class UnavailableContextualResolver:
 
 
 class RecordingSupervisor:
-    """Base for the supervisor doubles: remembers the brief, decides nothing.
-
-    ``ainvoke`` is the whole interface, because the real supervisor is a chat
-    model pinned to the `Supervision` schema and nothing more. Recording the
-    human message proves what was actually sent - several tests assert that a
-    hostile question never reached a model, or that the history did.
-    """
+    """Base for scope-router doubles that records the access-safe payload."""
 
     def __init__(self) -> None:
         self.briefs: list[str] = []
 
     @property
-    def histories(self) -> list[list[dict[str, str]]]:
-        """The conversation each decision was shown, oldest brief first."""
-        return [json.loads(brief)["history"] for brief in self.briefs]
+    def documents(self) -> list[list[dict[str, str]]]:
+        return [json.loads(brief)["documents"] for brief in self.briefs]
 
     @property
     def questions(self) -> list[str]:
         return [json.loads(brief)["question"] for brief in self.briefs]
 
-    async def ainvoke(self, messages: Sequence[Any], **kwargs: Any) -> Supervision:
+    async def ainvoke(self, messages: Sequence[Any], **kwargs: Any) -> ScopeDecision:
         brief = str(messages[-1].content)
         self.briefs.append(brief)
         return self.decide(json.loads(brief))
 
-    def decide(self, brief: dict[str, Any]) -> Supervision:
+    def decide(self, brief: dict[str, Any]) -> ScopeDecision:
         raise NotImplementedError
 
 
 class FakeSupervisor(RecordingSupervisor):
-    """Scripted, one decision per pass, and loud if a test scripts too few."""
+    """Scripted scope decisions, loud if a test scripts too few."""
 
-    def __init__(self, *decisions: Supervision) -> None:
+    def __init__(self, *decisions: ScopeDecision) -> None:
         super().__init__()
         self.decisions = list(decisions)
 
-    def decide(self, brief: dict[str, Any]) -> Supervision:
+    def decide(self, brief: dict[str, Any]) -> ScopeDecision:
         if not self.decisions:
             raise AssertionError("the supervisor was asked one more time than scripted")
         return self.decisions.pop(0)
 
 
 class UnavailableSupervisor(RecordingSupervisor):
-    def decide(self, brief: dict[str, Any]) -> Supervision:
+    def decide(self, brief: dict[str, Any]) -> ScopeDecision:
         raise RuntimeError("the supervisor provider is unavailable")
 
 
 class OfflineSupervisor(RecordingSupervisor):
-    """A supervisor with no model behind it: search once, then answer.
+    """Deterministic scope routing for integration tests."""
 
-    It reads the brief exactly as the real one does, so the integration suite
-    drives the whole loop - guard, classify, supervise, retrieve, write -
-    without a provider and without a scripted answer per test.
-    """
-
-    def __init__(
-        self,
-        *,
-        rewrite_to: str | None = None,
-        clarify: bool = False,
-        unsupported: bool = False,
-    ) -> None:
+    def __init__(self, *, in_scope: bool = True) -> None:
         super().__init__()
-        # The three things a test usually wants to pin: how a follow-up gets
-        # resolved, that it cannot be, and that the sources do not answer it.
-        self.rewrite_to = rewrite_to
-        self.clarify = clarify
-        self.unsupported = unsupported
+        self.in_scope = in_scope
 
-    def decide(self, brief: dict[str, Any]) -> Supervision:
-        if self.clarify:
-            return Supervision(action="clarify", reason="ambiguous_referent")
-        if brief["sources"]:
-            if self.unsupported:
-                return Supervision(action="unsupported", reason="does_not_answer_it")
-            return Supervision(action="answer", reason="sources_in_hand")
-        if brief["searches_left"]:
-            question = self.rewrite_to or brief["question"]
-            return Supervision(
-                action="search",
-                question=question if self.rewrite_to else "",
-                searches=[question],
-                reason="nothing_retrieved_yet",
-            )
-        return Supervision(action="unsupported", reason="nothing_found")
+    def decide(self, brief: dict[str, Any]) -> ScopeDecision:
+        return ScopeDecision(
+            in_scope=self.in_scope,
+            reason="potentially_relevant" if self.in_scope else "clearly_unrelated",
+        )

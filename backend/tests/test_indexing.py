@@ -25,10 +25,18 @@ from app.dependencies import get_storage_service
 from app.main import create_app
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
+from app.models.document_summary import DocumentSummary
 from app.repository.document_repository import DocumentRepository
+from app.repository.document_summary_repository import DocumentSummaryRepository
 from app.services.indexing_service import IndexingService
 from app.services.storage_service import StorageService
-from tests.fakes import ExplodingEmbedder, FakeEmbedder
+from app.services.summary_service import DocumentSummaryService
+from tests.fakes import (
+    ExplodingEmbedder,
+    FakeChatModel,
+    FakeEmbedder,
+    UnavailableChatModel,
+)
 from tests.helpers import WORKSPACES, create_schema, create_workspace, signup, sync_rbac_catalog
 
 pytestmark = pytest.mark.integration
@@ -42,6 +50,7 @@ class Env:
     session_factory: async_sessionmaker[AsyncSession]
     storage: StorageService
     embedder: FakeEmbedder
+    summary_model: FakeChatModel
     service: IndexingService
     headers: dict[str, str]
     workspace_id: str
@@ -64,6 +73,7 @@ async def env(postgres_url: str, test_storage: StorageService) -> AsyncIterator[
     app.dependency_overrides[get_storage_service] = lambda: test_storage
 
     embedder = FakeEmbedder()
+    summary_model = FakeChatModel(reply="- A short routing summary")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         headers = await signup(client, "indexer@example.com")
         workspace_id = await create_workspace(client, headers)
@@ -72,10 +82,12 @@ async def env(postgres_url: str, test_storage: StorageService) -> AsyncIterator[
             session_factory=factory,
             storage=test_storage,
             embedder=embedder,
+            summary_model=summary_model,
             service=IndexingService(
                 session_factory=factory,
                 storage=test_storage,
                 embedder=embedder,
+                summarizer=DocumentSummaryService(summary_model),
                 settings=SETTINGS,
             ),
             headers=headers,
@@ -139,6 +151,11 @@ async def _all_chunks(env: Env, document_id: str) -> list[DocumentChunk]:
         return list((await session.execute(stmt)).scalars())
 
 
+async def _summary(env: Env, document_id: str) -> DocumentSummary | None:
+    async with env.session_factory() as session:
+        return await session.get(DocumentSummary, uuid.UUID(document_id))
+
+
 # -- the happy path --------------------------------------------------------
 
 
@@ -154,6 +171,43 @@ async def test_indexes_pending_documents(env: Env) -> None:
         assert document.indexed_at is not None
         assert document.index_error is None
         assert await _chunks(env, document_id)
+
+
+async def test_indexing_stores_a_summary_from_only_the_configured_prefix(env: Env) -> None:
+    document_id = await _upload(env, "summary.txt", _prose("summary", sentences=120))
+
+    assert await _index_all(env) == ["indexed"]
+    stored = await _summary(env, document_id)
+    assert stored is not None
+    assert stored.summary == "- A short routing summary"
+    # Each rendered source chunk contributes one Type line. The service has
+    # more chunks available, but only the configured first four leave indexing.
+    assert env.summary_model.last_user_prompt.count("Type: paragraph") == 4
+
+
+async def test_summary_failure_does_not_fail_search_indexing(env: Env) -> None:
+    document_id = await _upload(env, "summary-failure.txt", _prose("searchable"))
+    env.service.summarizer = DocumentSummaryService(UnavailableChatModel())
+
+    assert await _index_all(env) == ["indexed"]
+    assert (await _document(env, document_id)).indexed is True
+    assert await _chunks(env, document_id)
+    assert await _summary(env, document_id) is None
+
+
+async def test_summary_upsert_keeps_one_current_row(env: Env) -> None:
+    document_id = await _upload(env, "upsert.txt", _prose("upsert"))
+    assert await _index_all(env) == ["indexed"]
+
+    async with env.session_factory() as session:
+        repository = DocumentSummaryRepository(session)
+        await repository.upsert(uuid.UUID(document_id), "- First replacement")
+        await repository.upsert(uuid.UUID(document_id), "- Current replacement")
+        await session.commit()
+        rows = await repository.list_for_documents([uuid.UUID(document_id)])
+
+    assert len(rows) == 1
+    assert rows[0].summary == "- Current replacement"
 
 
 async def test_chunks_carry_only_the_small_search_schema(env: Env) -> None:

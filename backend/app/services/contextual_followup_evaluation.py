@@ -20,7 +20,7 @@ from app.services.contextual_query_service import (
     ResolverUnavailableError,
 )
 from app.services.guardrail_service import GuardrailService
-from app.services.intent_service import IntentClassifier, RuleBasedIntentClassifier
+from app.services.intent_service import RuleBasedIntentClassifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +122,7 @@ async def evaluate_followups(
     resolver: ContextualQueryResolver,
     *,
     guardrails: GuardrailService | None = None,
-    intent_classifier: IntentClassifier | None = None,
+    intent_classifier: RuleBasedIntentClassifier | None = None,
 ) -> dict[str, object]:
     """Evaluate the same raw-query gates that precede the resolver in production."""
     guardrail_service = guardrails or GuardrailService()

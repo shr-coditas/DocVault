@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import Sequence
 from functools import lru_cache
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -53,14 +53,6 @@ class ResolverOutput(BaseModel):
         if not stripped:
             raise ValueError("standalone_query must not be blank")
         return stripped
-
-
-class ContextualQueryResolver(Protocol):
-    async def resolve(
-        self,
-        current_message: str,
-        history: Sequence[ConversationTurn],
-    ) -> ContextResolution: ...
 
 
 def build_user_prompt(current_message: str, history: Sequence[ConversationTurn]) -> str:
@@ -137,7 +129,7 @@ def _structured_resolution(payload: Any, *, used_history: bool) -> ContextResolu
     )
 
 
-class LangChainContextualQueryResolver:
+class ContextualQueryResolver:
     """Provider-backed resolver with its own client, timeout, and output parser."""
 
     def __init__(self, settings: Settings | None = None) -> None:
@@ -194,5 +186,5 @@ class LangChainContextualQueryResolver:
 
 
 @lru_cache(maxsize=1)
-def get_default_contextual_resolver() -> LangChainContextualQueryResolver:
-    return LangChainContextualQueryResolver()
+def get_default_contextual_resolver() -> ContextualQueryResolver:
+    return ContextualQueryResolver()

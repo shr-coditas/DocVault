@@ -49,7 +49,7 @@ logger = structlog.stdlib.get_logger("docvault.answer")
 _CITATION_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 
-class AnswerService:
+class CitedAnswerGenerator:
     def __init__(
         self,
         model: ChatModel,

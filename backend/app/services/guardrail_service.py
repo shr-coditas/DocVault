@@ -21,24 +21,10 @@ and neither logs.
 """
 
 import unicodedata
-from typing import ClassVar, Protocol
+from typing import ClassVar
 
 from app.config import Settings, get_settings
 from app.services.ai_types import GuardrailOutcome, GuardrailVerdict
-
-
-class GuardrailCheck(Protocol):
-    """One named check. Structural, so a test double needs no inheritance.
-
-    ``check`` is async despite every current implementation being pure CPU: a
-    hosted validator is I/O, and the repository is fully async by rule. Making it
-    async later would be a breaking change to every implementation; making it
-    async now costs a coroutine per check.
-    """
-
-    name: str
-
-    async def check(self, query: str) -> GuardrailVerdict: ...
 
 
 class NotEmptyCheck:
@@ -109,18 +95,21 @@ class HiddenCharacterCheck:
         return GuardrailVerdict(self.name, True)
 
 
+type InputCheck = NotEmptyCheck | MaxLengthCheck | HiddenCharacterCheck
+
+
 class GuardrailService:
     def __init__(
         self,
-        checks: list[GuardrailCheck] | None = None,
+        checks: list[InputCheck] | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.checks = checks if checks is not None else self._default_checks()
 
-    def _default_checks(self) -> list[GuardrailCheck]:
+    def _default_checks(self) -> list[InputCheck]:
         """Ordered cheapest-and-most-decisive first. See the module docstring."""
-        checks: list[GuardrailCheck] = [
+        checks: list[InputCheck] = [
             NotEmptyCheck(),
             MaxLengthCheck(self.settings.guardrail_max_query_chars),
         ]

@@ -8,10 +8,10 @@ from app.ai.agent.agent_manager import (
     State,
     classify,
     guard,
+    out_of_scope,
+    rephrase,
     respond,
-    retrieve,
-    supervise,
-    write,
+    supervisor,
 )
 
 
@@ -22,19 +22,45 @@ def route(state: State) -> str:
 
 def build_graph() -> Any:
     builder = StateGraph(State, context_schema=Context)
+
     builder.add_node("guard", guard)
     builder.add_node("classify", classify)
-    builder.add_node("supervise", supervise)
-    builder.add_node("retrieve", retrieve)
-    builder.add_node("write", write)
+    builder.add_node("rephrase", rephrase)
+    builder.add_node("supervisor", supervisor)
+    builder.add_node("out_of_scope", out_of_scope)
     builder.add_node("respond", respond)
 
     builder.add_edge(START, "guard")
-    builder.add_conditional_edges("guard", route, ["classify", "respond"])
-    builder.add_conditional_edges("classify", route, ["supervise", "respond"])
-    builder.add_conditional_edges("supervise", route, ["retrieve", "write", "respond"])
-    builder.add_edge("retrieve", "supervise")
-    builder.add_conditional_edges("write", route, ["supervise", "respond"])
+
+    builder.add_conditional_edges(
+        "guard",
+        route,
+        ["classify", "respond"],
+    )
+
+    builder.add_conditional_edges(
+        "classify",
+        route,
+        ["rephrase", "respond"],
+    )
+
+    # Rephrasing may discover an ambiguous reference.
+    builder.add_conditional_edges(
+        "rephrase",
+        route,
+        ["supervisor", "respond"],
+    )
+
+    builder.add_conditional_edges(
+        "supervisor",
+        route,
+        ["respond", "out_of_scope"],
+    )
+
+    # This node only sets the fixed decline response.
+    builder.add_edge("out_of_scope", "respond")
+
+    # Respond assembles the final QueryOutcome.
     builder.add_edge("respond", END)
 
     return builder.compile(name="docvault_query")

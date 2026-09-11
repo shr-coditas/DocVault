@@ -181,12 +181,23 @@ class UnavailableDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentBrief:
+    """Access-safe routing context for one selected document."""
+
+    document_id: uuid.UUID
+    title: str
+    summary: str
+
+
+@dataclass(frozen=True, slots=True)
 class QueryExecutionContext:
     """Conversation-owned state loaded only after the raw query is safe."""
 
     document_ids: tuple[uuid.UUID, ...] | None
     history: tuple[ConversationTurn, ...] = ()
     unavailable_documents: tuple[UnavailableDocument, ...] = ()
+    document_summaries: tuple[DocumentBrief, ...] = ()
+    summaries_complete: bool = False
 
     @property
     def scope_degraded(self) -> bool:

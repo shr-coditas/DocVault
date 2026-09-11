@@ -25,22 +25,24 @@ debugging a turn cannot accidentally show you passages the user cannot read.
 
 import argparse
 import asyncio
-import json
 import uuid
 from typing import Any, cast
 
-from langchain_core.messages import HumanMessage
 from langchain_core.runnables import Runnable
 
 from app.ai.agent.agent_manager import Context, State
 from app.ai.agent.graph_manager import get_graph
-from app.ai.agent.llm_response_dto import Supervision
-from app.ai.agent.workflow_manager import create_decision_model, serialize_conversation
+from app.ai.agent.llm_response_dto import ScopeDecision
+from app.ai.agent.workflow_manager import create_decision_model
 from app.config import get_settings
 from app.db.session import async_session_factory, dispose_engine
+from app.repository.document_repository import DocumentRepository
+from app.repository.document_summary_repository import DocumentSummaryRepository
 from app.repository.user_repository import UserRepository
-from app.services.ai_types import ConversationTurn, SearchMode
-from app.services.answer_service import AnswerService
+from app.services.ai_types import ConversationTurn, DocumentBrief, SearchMode
+from app.services.answer_service import CitedAnswerGenerator
+from app.services.contextual_query_service import get_default_contextual_resolver
+from app.services.document_access import document_access_filter
 from app.services.embedding_service import get_default_embedder
 from app.services.llm_service import get_default_chat_model
 from app.services.reranking_service import get_default_reranker
@@ -49,24 +51,10 @@ from app.utils.logging import configure_logging
 
 
 class OfflineSupervisor:
-    """Search once, then answer. The loop, with no provider and no billing.
+    """Treat the selected scope as potentially relevant without a model call."""
 
-    It reads the brief the same way the real supervisor does, so ``--offline``
-    still exercises every node, both budgets and the whole state contract - the
-    only thing it does not exercise is the prompt.
-    """
-
-    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Supervision:
-        brief = json.loads(str(messages[-1].content))
-        if brief["sources"]:
-            return Supervision(action="answer", reason="sources_in_hand")
-        if brief["searches_left"]:
-            return Supervision(
-                action="search",
-                searches=[brief["question"]],
-                reason="nothing_retrieved_yet",
-            )
-        return Supervision(action="unsupported", reason="nothing_found")
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> ScopeDecision:
+        return ScopeDecision(in_scope=True, reason="offline_fail_open")
 
 
 def _arguments() -> argparse.Namespace:
@@ -130,27 +118,63 @@ async def _run(args: argparse.Namespace) -> int:
         if actor is None:
             raise ValueError("that user does not exist")
 
+        document_ids = tuple(args.document_id) if args.document_id else None
+        document_summaries: tuple[DocumentBrief, ...] = ()
+        summaries_complete = False
+        if document_ids is not None:
+            access = await document_access_filter(
+                session,
+                actor.id,
+                args.workspace_id,
+            )
+            documents = await DocumentRepository(session).accessible_active_by_ids(
+                args.workspace_id,
+                document_ids,
+                access=access,
+            )
+            if len(documents) != len(document_ids):
+                raise ValueError("one or more selected documents are unavailable")
+            summaries = await DocumentSummaryRepository(session).list_for_documents(document_ids)
+            by_id = {summary.document_id: summary.summary for summary in summaries}
+            documents_by_id = {document.id: document for document in documents}
+            document_summaries = tuple(
+                DocumentBrief(
+                    document_id=document_id,
+                    title=documents_by_id[document_id].title,
+                    summary=by_id[document_id],
+                )
+                for document_id in document_ids
+                if document_id in by_id
+            )
+            summaries_complete = len(document_summaries) == len(document_ids)
+
         context = Context(
             actor=actor,
             workspace_id=args.workspace_id,
             search=SearchService(session, get_default_embedder(), reranker=get_default_reranker()),
-            answers=AnswerService(get_default_chat_model()),
+            answers=CitedAnswerGenerator(get_default_chat_model()),
             # Duck-typed on purpose: the graph only ever calls `ainvoke`.
             supervisor=cast(
                 Runnable[Any, Any],
                 OfflineSupervisor() if args.offline else create_decision_model(settings),
             ),
             settings=settings,
-            document_ids=tuple(args.document_id) if args.document_id else None,
+            document_ids=document_ids,
             limit=args.limit,
             mode=args.mode,
+            resolver=get_default_contextual_resolver(),
         )
 
         # `astream` rather than `ainvoke`: the same run, but every node's update
         # arrives as it is produced, which is what makes a loop legible.
         final: State | None = None
         async for step in get_graph().astream(
-            {"messages": [*serialize_conversation(history), HumanMessage(content=args.question)]},
+            {
+                "question": args.question,
+                "history": history,
+                "document_summaries": document_summaries,
+                "summaries_complete": summaries_complete,
+            },
             context=context,
             config={"recursion_limit": settings.agent_max_steps},
             stream_mode="updates",

@@ -31,9 +31,11 @@ from app.models.document import Document
 from app.models.user import User
 from app.repository.conversation_repository import ConversationRepository
 from app.repository.document_repository import DocumentRepository
+from app.repository.document_summary_repository import DocumentSummaryRepository
 from app.services.ai_types import (
     Citation,
     ConversationTurn,
+    DocumentBrief,
     QueryDecision,
     QueryExecutionContext,
     QueryOutcome,
@@ -157,6 +159,7 @@ class ConversationService:
         self.session = session
         self.repository = ConversationRepository(session)
         self.documents = DocumentRepository(session)
+        self.summaries = DocumentSummaryRepository(session)
         self.audit = AuditService(session)
         self.query = query
 
@@ -494,6 +497,26 @@ class ConversationService:
                     unavailable_documents=unavailable,
                 )
 
+            accessible_by_id = {document.id: document for document in accessible}
+            summary_rows = await self.summaries.list_for_documents(document_ids)
+            summaries_by_id = {row.document_id: row.summary for row in summary_rows}
+            document_summaries = tuple(
+                DocumentBrief(
+                    document_id=document_id,
+                    title=accessible_by_id[document_id].title,
+                    summary=summaries_by_id[document_id],
+                )
+                for document_id in document_ids
+                if document_id in summaries_by_id
+            )
+            summaries_complete = len(document_summaries) == len(document_ids)
+        else:
+            # Workspace scope is intentionally unbounded. Sending an arbitrary
+            # number of summaries would make the routing prompt unbounded, so
+            # workspace-wide questions fail open to permission-filtered search.
+            document_summaries = ()
+            summaries_complete = False
+
         history = await self._context_history(
             conversation_id,
             workspace_id,
@@ -504,6 +527,8 @@ class ConversationService:
             document_ids=document_ids,
             history=history,
             unavailable_documents=unavailable,
+            document_summaries=document_summaries,
+            summaries_complete=summaries_complete,
         )
 
     async def _context_history(
